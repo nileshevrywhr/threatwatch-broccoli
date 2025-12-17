@@ -7,3 +7,9 @@ env/
 venv/
 .env
 .DS_Store
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+beat.pid
+worker.pid

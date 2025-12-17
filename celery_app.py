@@ -2,6 +2,7 @@ import os
 import logging
 import time
 from celery import Celery
+from celery.schedules import crontab
 from celery.signals import worker_ready
 
 # Configure logging
@@ -31,6 +32,16 @@ app.conf.update(
     timezone="UTC",
     enable_utc=True,
     worker_hijack_root_logger=False, # Allow custom logging config
+    beat_schedule={
+        "scan_due_monitors": {
+            "task": "scan_due_monitors",
+            "schedule": crontab(minute="*/5"),
+        },
+        "cleanup_old_reports": {
+            "task": "cleanup_old_reports",
+            "schedule": crontab(hour=2, minute=0),
+        },
+    }
 )
 
 @worker_ready.connect
