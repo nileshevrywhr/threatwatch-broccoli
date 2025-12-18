@@ -1,9 +1,12 @@
 import os
 import logging
 import time
+import json
 from datetime import datetime, timedelta, timezone
 from celery import Task
 from supabase import create_client, Client
+from googleapiclient.discovery import build
+from fpdf import FPDF
 from celery_app import app
 
 # Configure logging
@@ -15,9 +18,14 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-else:
-    logger.warning("Supabase credentials not found. DB operations will fail.")
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        logger.error(f"Failed to initialize Supabase client: {e}")
+
+# Google CSE Setup
+GOOGLE_CSE_API_KEY = os.environ.get("GOOGLE_CSE_API_KEY")
+GOOGLE_CSE_CX = os.environ.get("GOOGLE_CSE_CX")
 
 class BaseTask(Task):
     """
@@ -38,50 +46,168 @@ class BaseTask(Task):
         logger.error(f"task={self.name} status=error duration={duration:.2f}s error={str(exc)}")
         super().on_failure(exc, task_id, args, kwargs, einfo)
 
+def _calculate_score(item, now):
+    """
+    Calculates a simple score based on recency and keyword presence.
+    """
+    score = 0
+
+    # 1. Recency Score
+    # Google CSE returns snippet/pagemap/etc. trying to find date is tricky consistently.
+    # We will look for "pagemap" -> "metatags" -> "article:published_time" or similar,
+    # or rely on what's available. For MVP, we might skip complex date parsing if not readily available
+    # or assign a default neutral score.
+    # This is a placeholder for more robust extraction.
+
+    # 2. Keyword Boost (Source Authority Proxy)
+    text_to_scan = (item.get("title", "") + " " + item.get("snippet", "")).lower()
+    keywords = ["attack", "breach", "malware", "ransomware", "vulnerability", "exploit"]
+
+    for kw in keywords:
+        if kw in text_to_scan:
+            score += 10
+
+    # Default base score
+    score += 5
+
+    return score
+
+def _generate_pdf(report_content, monitor_id):
+    """
+    Generates a PDF from report content and uploads it to Supabase Storage.
+    Returns the public URL.
+    """
+    try:
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+
+        pdf.cell(200, 10, txt=f"Threat Report for Monitor {monitor_id}", ln=1, align="C")
+        pdf.ln(10)
+
+        pdf.set_font("Arial", size=10)
+        pdf.cell(200, 10, txt=f"Generated at: {datetime.now(timezone.utc).isoformat()}", ln=1)
+        pdf.ln(10)
+
+        for item in report_content:
+            title = item.get("title", "No Title").encode('latin-1', 'replace').decode('latin-1')
+            link = item.get("link", "#").encode('latin-1', 'replace').decode('latin-1')
+            snippet = item.get("snippet", "").encode('latin-1', 'replace').decode('latin-1')
+            score = item.get("score", 0)
+
+            pdf.set_font("Arial", 'B', 10)
+            pdf.multi_cell(0, 5, txt=f"{title} (Score: {score})")
+            pdf.set_font("Arial", '', 9)
+            pdf.write(5, link, link)
+            pdf.ln()
+            pdf.multi_cell(0, 5, txt=snippet)
+            pdf.ln(5)
+
+        filename = f"report_{monitor_id}_{int(time.time())}.pdf"
+        pdf_path = f"/tmp/{filename}"
+
+        try:
+            pdf.output(pdf_path)
+
+            # Upload to Supabase Storage
+            with open(pdf_path, 'rb') as f:
+                supabase.storage.from_("reports").upload(path=filename, file=f, file_options={"content-type": "application/pdf"})
+
+            # Get public URL
+            # Note: Bucket must be public for this to work directly as a download link
+            public_url = supabase.storage.from_("reports").get_public_url(filename)
+            return public_url
+
+        finally:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+
+    except Exception as e:
+        logger.error(f"Failed to generate/upload PDF: {e}")
+        return None
+
 @app.task(
     base=BaseTask,
     bind=True,
-    name="run_monitor_scan",
+    name="scan_monitor_task",
     soft_time_limit=60,
     time_limit=90
 )
-def run_monitor_scan(self, monitor_id: str):
+def scan_monitor_task(self, monitor_id: str):
     """
-    Executes a scan for a specific monitor.
-    Creates records in 'searches' and 'reports' tables.
+    Worker task: Scans for a monitor, generates a report, and saves it.
     """
     if not supabase:
-        raise RuntimeError("Supabase client not initialized")
+        logger.error("Supabase client not initialized")
+        return None
 
-    logger.info(f"Starting scan for monitor_id={monitor_id}")
+    if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_CX:
+        logger.error("Google CSE credentials not set")
+        return None
 
-    # 1. Fetch monitor details
-    response = supabase.table("monitors").select("*").eq("id", monitor_id).execute()
-    if not response.data:
-        logger.error(f"Monitor not found: {monitor_id}")
-        return f"Monitor {monitor_id} not found"
+    try:
+        # 1. Fetch monitor configuration
+        response = supabase.table("monitors").select("*").eq("id", monitor_id).execute()
+        if not response.data:
+            logger.error(f"Monitor not found: {monitor_id}")
+            return None
 
-    monitor = response.data[0]
+        monitor = response.data[0]
+        query_text = monitor.get("query_text")
 
-    # 2. Create 'searches' record
-    search_data = {
-        "query_text": monitor.get("query_text", ""),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "status": "completed"
-    }
-    search_res = supabase.table("searches").insert(search_data).execute()
-    # Assuming we get an ID back, usually likely.
+        if not query_text:
+            logger.warning(f"Monitor {monitor_id} has no query_text")
+            return None
 
-    # 3. Create 'reports' record
-    report_data = {
-        "user_id": monitor.get("user_id"),
-        "monitor_id": monitor_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "pdf_url": "https://example.com/dummy_report.pdf" # Placeholder
-    }
-    supabase.table("reports").insert(report_data).execute()
+        # 2. Run Google CSE Search
+        service = build("customsearch", "v1", developerKey=GOOGLE_CSE_API_KEY, cache_discovery=False)
+        res = service.cse().list(q=query_text, cx=GOOGLE_CSE_CX, num=10).execute()
+        items = res.get("items", [])
 
-    return f"Scan completed for {monitor_id}"
+        # 3. Rank results
+        ranked_items = []
+        now = datetime.now(timezone.utc)
+        for item in items:
+            score = _calculate_score(item, now)
+            item["score"] = score
+            ranked_items.append(item)
+
+        ranked_items.sort(key=lambda x: x["score"], reverse=True)
+
+        # 4. Generate Report Content & PDF
+        pdf_url = _generate_pdf(ranked_items, monitor_id)
+
+        # 5. Store in Supabase
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Insert Search Record (Pipeline)
+        search_data = {
+            "query_text": query_text,
+            "created_at": now_iso,
+            "status": "completed"
+        }
+        supabase.table("searches").insert(search_data).execute()
+
+        # Insert Report Record
+        report_data = {
+            "user_id": monitor.get("user_id"),
+            "monitor_id": monitor_id,
+            "created_at": now_iso,
+            "pdf_url": pdf_url
+        }
+        report_res = supabase.table("reports").insert(report_data).execute()
+
+        if report_res.data:
+             report_id = report_res.data[0].get("id")
+             return report_id
+
+        # Fallback if return data isn't immediate (though it usually is with explicit return)
+        return "success_no_id"
+
+    except Exception as e:
+        # Re-raising ensures BaseTask.on_failure is called and the task state is set to FAILURE
+        logger.error(f"Error in scan_monitor_task: {e}", exc_info=True)
+        raise e
 
 @app.task(
     base=BaseTask,
@@ -116,7 +242,7 @@ def scan_due_monitors(self):
         monitor_id = monitor["id"]
 
         # 2. Enqueue task
-        run_monitor_scan.delay(monitor_id)
+        scan_monitor_task.delay(monitor_id)
         count_enqueued += 1
 
         # 3. Update next_run_at
