@@ -278,7 +278,14 @@ def cleanup_old_reports(self):
     if not supabase:
         raise RuntimeError("Supabase client not initialized")
 
-    retention_days = int(os.environ.get("RETENTION_DAYS", 30))
+    try:
+        retention_days = int(os.environ.get("RETENTION_DAYS", 30))
+        if retention_days <= 0:
+            logger.warning("RETENTION_DAYS must be positive, using default of 30")
+            retention_days = 30
+    except ValueError:
+        logger.warning("Invalid RETENTION_DAYS value, using default of 30")
+        retention_days = 30
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
     cutoff_iso = cutoff_date.isoformat()
 
