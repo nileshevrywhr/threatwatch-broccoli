@@ -107,18 +107,20 @@ def _generate_pdf(report_content, monitor_id):
         pdf_path = f"/tmp/{filename}"
         pdf.output(pdf_path)
 
-        # Upload to Supabase Storage
-        with open(pdf_path, 'rb') as f:
-            supabase.storage.from_("reports").upload(path=filename, file=f, file_options={"content-type": "application/pdf"})
+        try:
+            # Upload to Supabase Storage
+            with open(pdf_path, 'rb') as f:
+                supabase.storage.from_("reports").upload(path=filename, file=f, file_options={"content-type": "application/pdf"})
 
-        # Get public URL
-        # Note: Bucket must be public for this to work directly as a download link
-        public_url = supabase.storage.from_("reports").get_public_url(filename)
+            # Get public URL
+            # Note: Bucket must be public for this to work directly as a download link
+            public_url = supabase.storage.from_("reports").get_public_url(filename)
 
-        # Cleanup
-        os.remove(pdf_path)
-
-        return public_url
+            return public_url
+        finally:
+            # Cleanup temp file even if an exception occurs
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
     except Exception as e:
         logger.error(f"Failed to generate/upload PDF: {e}")
         return None
