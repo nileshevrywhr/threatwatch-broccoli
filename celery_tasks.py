@@ -8,6 +8,7 @@ from supabase import create_client, Client
 from googleapiclient.discovery import build
 from fpdf import FPDF
 from celery_app import app
+from utils.schedule_utils import calculate_next_run_at
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -249,13 +250,11 @@ def scan_due_monitors(self):
         frequency = monitor.get("frequency", "daily").lower()
         current_next_run = datetime.fromisoformat(monitor["next_run_at"].replace("Z", "+00:00"))
 
-        if frequency == "weekly":
-            next_date = current_next_run + timedelta(weeks=1)
-        elif frequency == "monthly":
-            # Simple 30 day add for MVP
-            next_date = current_next_run + timedelta(days=30)
-        else: # daily or default
-            next_date = current_next_run + timedelta(days=1)
+        try:
+            next_date = calculate_next_run_at(frequency, current_next_run)
+        except ValueError:
+            logger.warning(f"Invalid frequency '{frequency}' for monitor {monitor_id}, defaulting to daily.")
+            next_date = calculate_next_run_at('daily', current_next_run)
 
         supabase.table("monitors")\
             .update({"next_run_at": next_date.isoformat()})\
