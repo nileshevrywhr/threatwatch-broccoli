@@ -44,6 +44,9 @@ app.conf.update(
     }
 )
 
+# Import tasks to ensure they are registered
+import celery_tasks
+
 @worker_ready.connect
 def log_worker_start(sender, **kwargs):
     logger.info("Celery worker started successfully.")
