@@ -91,7 +91,7 @@ def _generate_pdf(report_content, monitor_id):
 
         for item in report_content:
             title = item.get("title", "No Title").encode('latin-1', 'replace').decode('latin-1')
-            link = item.get("link", "#")
+            link = item.get("link", "#").encode('latin-1', 'replace').decode('latin-1')
             snippet = item.get("snippet", "").encode('latin-1', 'replace').decode('latin-1')
             score = item.get("score", 0)
 
@@ -105,9 +105,10 @@ def _generate_pdf(report_content, monitor_id):
 
         filename = f"report_{monitor_id}_{int(time.time())}.pdf"
         pdf_path = f"/tmp/{filename}"
-        pdf.output(pdf_path)
 
         try:
+            pdf.output(pdf_path)
+
             # Upload to Supabase Storage
             with open(pdf_path, 'rb') as f:
                 supabase.storage.from_("reports").upload(path=filename, file=f, file_options={"content-type": "application/pdf"})
@@ -115,12 +116,12 @@ def _generate_pdf(report_content, monitor_id):
             # Get public URL
             # Note: Bucket must be public for this to work directly as a download link
             public_url = supabase.storage.from_("reports").get_public_url(filename)
-
             return public_url
+
         finally:
-            # Cleanup temp file even if an exception occurs
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
+
     except Exception as e:
         logger.error(f"Failed to generate/upload PDF: {e}")
         return None
@@ -204,8 +205,9 @@ def scan_monitor_task(self, monitor_id: str):
         return "success_no_id"
 
     except Exception as e:
+        # Re-raising ensures BaseTask.on_failure is called and the task state is set to FAILURE
         logger.error(f"Error in scan_monitor_task: {e}", exc_info=True)
-        return None
+        raise e
 
 @app.task(
     base=BaseTask,
