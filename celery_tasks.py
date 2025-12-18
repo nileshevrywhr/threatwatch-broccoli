@@ -273,12 +273,20 @@ def scan_due_monitors(self):
 )
 def cleanup_old_reports(self):
     """
-    Hygiene task: Deletes reports older than 30 days.
+    Hygiene task: Deletes reports older than RETENTION_DAYS (env var, default 30).
     """
     if not supabase:
         raise RuntimeError("Supabase client not initialized")
 
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
+    try:
+        retention_days = int(os.environ.get("RETENTION_DAYS", 30))
+        if retention_days <= 0:
+            logger.warning("RETENTION_DAYS must be positive, using default of 30")
+            retention_days = 30
+    except ValueError:
+        logger.warning("Invalid RETENTION_DAYS value, using default of 30")
+        retention_days = 30
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
     cutoff_iso = cutoff_date.isoformat()
 
     response = supabase.table("reports")\
@@ -290,4 +298,5 @@ def cleanup_old_reports(self):
     # but normally data contains deleted rows
     deleted_count = len(response.data) if response.data else 0
 
+    logger.info(f"Deleted {deleted_count} old reports.")
     return f"Deleted {deleted_count} old reports"
