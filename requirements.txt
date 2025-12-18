@@ -3,3 +3,4 @@ redis>=4.0.0
 supabase
 google-api-python-client
 fpdf
+python-dateutil
