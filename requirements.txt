@@ -4,3 +4,5 @@ supabase
 google-api-python-client
 fpdf
 python-dateutil
+fastapi
+uvicorn
