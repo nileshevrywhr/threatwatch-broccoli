@@ -75,6 +75,20 @@ async def create_monitor(monitor: MonitorRequest):
         logger.error(f"Error creating monitor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/monitors/{monitor_id}/test")
+async def test_monitor(monitor_id: str):
+    """
+    Triggers an immediate scan for a specific monitor.
+    Does not synchronously validate existence (worker handles it).
+    Returns the Celery task ID.
+    """
+    try:
+        task = scan_monitor_task.delay(monitor_id)
+        return {"task_id": task.id}
+    except Exception as e:
+        logger.error(f"Error triggering test scan for monitor {monitor_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to enqueue task")
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
