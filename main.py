@@ -130,4 +130,6 @@ def health_check_celery():
     if details:
         response["detail"] = "; ".join(details)
 
+    if redis_status != "ok" or celery_status != "ok":
+        raise HTTPException(status_code=503, detail=response)
     return response
