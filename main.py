@@ -1,5 +1,6 @@
 import os
 import logging
+import redis
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -7,6 +8,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
+import celery_app
 from celery_tasks import scan_monitor_task
 from utils.schedule_utils import calculate_next_run_at
 
@@ -92,3 +94,40 @@ async def test_monitor(monitor_id: str):
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.get("/health/celery")
+def health_check_celery():
+    redis_status = "ok"
+    celery_status = "ok"
+    details = []
+
+    # 1. Check Redis
+    try:
+        broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+        r = redis.from_url(broker_url)
+        r.ping()
+    except Exception as e:
+        redis_status = "error"
+        details.append(f"Redis error: {str(e)}")
+        logger.error(f"Health check Redis failed: {e}")
+
+    # 2. Check Celery Worker
+    try:
+        # Check celery ping task
+        # timeout=3s as requested
+        res = celery_app.ping.delay()
+        res.get(timeout=3)
+    except Exception as e:
+        celery_status = "error"
+        details.append(f"Celery error: {str(e)}")
+        logger.error(f"Health check Celery failed: {e}")
+
+    response = {
+        "redis": redis_status,
+        "celery": celery_status
+    }
+
+    if details:
+        response["detail"] = "; ".join(details)
+
+    return response
