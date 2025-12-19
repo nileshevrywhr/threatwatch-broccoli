@@ -212,6 +212,10 @@ def scan_monitor_task(self, monitor_id: str):
 
         if report_res.data:
              report_id = report_res.data[0].get("id")
+
+             # Trigger email delivery
+             send_report_email_task.delay(report_id)
+
              return report_id
 
         # Fallback if return data isn't immediate (though it usually is with explicit return)
