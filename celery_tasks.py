@@ -2,6 +2,9 @@ import os
 import logging
 import time
 import json
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
 from celery import Task
 from supabase import create_client, Client
@@ -190,13 +193,22 @@ def scan_monitor_task(self, monitor_id: str):
         supabase.table("searches").insert(search_data).execute()
 
         # Insert Report Record
+        item_count = len(ranked_items)
         report_data = {
             "user_id": monitor.get("user_id"),
             "monitor_id": monitor_id,
             "created_at": now_iso,
             "pdf_url": pdf_url
         }
-        report_res = supabase.table("reports").insert(report_data).execute()
+
+        # Try to insert with item_count, fallback if schema doesn't match
+        try:
+            data_with_count = report_data.copy()
+            data_with_count["item_count"] = item_count
+            report_res = supabase.table("reports").insert(data_with_count).execute()
+        except Exception as insert_error:
+            logger.warning(f"Failed to insert report with item_count, falling back to base schema: {insert_error}")
+            report_res = supabase.table("reports").insert(report_data).execute()
 
         if report_res.data:
              report_id = report_res.data[0].get("id")
@@ -299,3 +311,111 @@ def cleanup_old_reports(self):
 
     logger.info(f"Deleted {deleted_count} old reports.")
     return f"Deleted {deleted_count} old reports"
+
+@app.task(
+    base=BaseTask,
+    bind=True,
+    name="send_report_email_task",
+    soft_time_limit=30,
+    time_limit=60
+)
+def send_report_email_task(self, report_id: str):
+    """
+    Delivery task: Sends an email notification for a generated report.
+    """
+    if not supabase:
+        logger.error("Supabase client not initialized")
+        return None
+
+    try:
+        # 1. Fetch report details
+        response = supabase.table("reports").select("*").eq("id", report_id).execute()
+        if not response.data:
+            logger.error(f"Report not found: {report_id}")
+            return None
+
+        report = response.data[0]
+        user_id = report.get("user_id")
+        pdf_url = report.get("pdf_url")
+        item_count = report.get("item_count") # Might be None if schema doesn't match
+
+        # 2. Determine User Email
+        recipient_email = None
+        email_override = os.environ.get("EMAIL_OVERRIDE")
+
+        if email_override:
+            recipient_email = email_override
+            logger.info(f"Using EMAIL_OVERRIDE: {recipient_email}")
+        else:
+            # Fetch from Supabase Auth
+            try:
+                user = supabase.auth.admin.get_user_by_id(user_id)
+                if user and user.user and user.user.email:
+                     recipient_email = user.user.email
+                else:
+                    logger.error(f"Could not find email for user_id: {user_id}")
+                    return None
+            except Exception as auth_error:
+                 logger.error(f"Failed to fetch user email: {auth_error}")
+                 return None
+
+        if not recipient_email:
+             logger.error("No recipient email resolved.")
+             return None
+
+        # 3. Prepare Email Content
+        smtp_host = os.environ.get("SMTP_HOST")
+        smtp_port = os.environ.get("SMTP_PORT")
+        smtp_user = os.environ.get("SMTP_USERNAME")
+        smtp_password = os.environ.get("SMTP_PASSWORD")
+        email_from = os.environ.get("EMAIL_FROM")
+
+        if not all([smtp_host, smtp_port, email_from]):
+            logger.error("SMTP configuration missing (HOST, PORT, or EMAIL_FROM)")
+            return None
+
+        # Construct Summary
+        if item_count is not None:
+             summary_text = f"- {item_count} potential threats identified"
+        else:
+             summary_text = "- Potential threats identified"
+
+        subject = "Your ThreatWatch report is ready"
+        body = f"""Your ThreatWatch report has been generated successfully.
+
+Summary:
+{summary_text}
+
+You can download the full report here:
+{pdf_url}
+
+— ThreatWatch
+"""
+
+        msg = MIMEMultipart()
+        msg['From'] = email_from
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        # 4. Send Email
+        try:
+             port = int(smtp_port)
+             server = smtplib.SMTP(smtp_host, port)
+             server.starttls()
+             if smtp_user and smtp_password:
+                 server.login(smtp_user, smtp_password)
+
+             server.sendmail(email_from, recipient_email, msg.as_string())
+             server.quit()
+
+             logger.info(f"Email sent to {recipient_email} for report {report_id}")
+             return "email_sent"
+
+        except Exception as smtp_error:
+             logger.error(f"SMTP error: {smtp_error}")
+             raise smtp_error
+
+    except Exception as e:
+        logger.error(f"Error in send_report_email_task: {e}", exc_info=True)
+        raise e
