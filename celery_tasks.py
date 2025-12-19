@@ -35,19 +35,100 @@ class BaseTask(Task):
     """
     Base Celery Task class that handles structured logging for start, success, and failure.
     """
+    def _get_log_context(self, args, kwargs):
+        """
+        Best-effort extraction of entity IDs for logging.
+        """
+        context = {}
+
+        # Check kwargs first
+        if "monitor_id" in kwargs:
+            context["monitor_id"] = kwargs["monitor_id"]
+        if "report_id" in kwargs:
+            context["report_id"] = kwargs["report_id"]
+
+        # Check positional args if context still empty
+        # Assuming if first arg is a string, it might be an ID
+        if not context and args and isinstance(args[0], str):
+            # We don't know if it is monitor_id or report_id without task specific logic,
+            # but usually it's monitor_id for scan_monitor and report_id for send_email.
+            # However, since we want generic, we might just log it if we can infer,
+            # or we rely on the fact that for our tasks, arg[0] IS the id.
+            # But the requirement is not to hardcode task names.
+            # So we will try to inspect the variable names of the task function if possible?
+            # No, that's too complex.
+            # Let's just try to be smart about it?
+            # Actually, the user instruction was: "If first arg is a UUID-like string -> assume it’s the entity ID"
+            # For now, let's just leave it generic or inferred by checking both?
+            # Or we can just log it as a generic "id" if we are unsure?
+            # But the schema requested "monitor_id" or "report_id".
+            # Let's peek at the task name to hint? The user said "Do NOT hardcode: if task_name == ...".
+            # BUT, we can inspect `self.run.__code__.co_varnames` if we really wanted to be magic,
+            # but that's brittle.
+
+            # Given the constraints, and "Best-effort", let's just see if we can identify it.
+            # Actually, most Celery tasks calls in this codebase use positional args.
+            # scan_monitor_task(monitor_id)
+            # send_report_email_task(report_id)
+
+            # Since we can't key off the name, we might not be able to distinguish "monitor_id" vs "report_id"
+            # purely from a positional arg without some knowledge.
+            # HOWEVER, we can just check if the key matches a pattern? No.
+
+            # Let's try to map generic arg 0 to "entity_id" if we can't decide?
+            # The prompt asked for "monitor_id (if available)" and "report_id (if available)".
+
+            # Let's inspect the argument name of the function!
+            try:
+                # This works for tasks defined as functions
+                arg_names = self.run.__code__.co_varnames
+                if arg_names:
+                    first_arg_name = arg_names[1] if arg_names[0] == 'self' else arg_names[0]
+                    if first_arg_name in ['monitor_id', 'report_id']:
+                         context[first_arg_name] = args[0]
+            except Exception:
+                pass
+
+        return context
+
     def __call__(self, *args, **kwargs):
         self.start_time = time.time()
-        logger.info(f"task={self.name} status=start args={args} kwargs={kwargs}")
+
+        log_payload = {
+            "task": self.name,
+            "status": "start",
+        }
+        log_payload.update(self._get_log_context(args, kwargs))
+
+        logger.info(json.dumps(log_payload))
         return super().__call__(*args, **kwargs)
 
     def on_success(self, retval, task_id, args, kwargs):
-        duration = time.time() - self.start_time
-        logger.info(f"task={self.name} status=success duration={duration:.2f}s result={retval}")
+        duration_ms = int((time.time() - self.start_time) * 1000)
+
+        log_payload = {
+            "task": self.name,
+            "status": "success",
+            "duration_ms": duration_ms,
+            "result": str(retval) # Ensure simple string representation
+        }
+        log_payload.update(self._get_log_context(args, kwargs))
+
+        logger.info(json.dumps(log_payload))
         super().on_success(retval, task_id, args, kwargs)
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
-        duration = time.time() - self.start_time
-        logger.error(f"task={self.name} status=error duration={duration:.2f}s error={str(exc)}")
+        duration_ms = int((time.time() - self.start_time) * 1000)
+
+        log_payload = {
+            "task": self.name,
+            "status": "failure",
+            "duration_ms": duration_ms,
+            "error": str(exc)
+        }
+        log_payload.update(self._get_log_context(args, kwargs))
+
+        logger.error(json.dumps(log_payload))
         super().on_failure(exc, task_id, args, kwargs, einfo)
 
 def _calculate_score(item, now):
