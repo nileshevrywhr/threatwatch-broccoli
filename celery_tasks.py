@@ -326,6 +326,15 @@ def scan_due_monitors(self):
     """
     Scheduler task: Finds monitors due for a run, enqueues scans, and updates next_run_at.
     """
+    # Kill switch logic
+    if os.environ.get("DISABLE_SCHEDULER", "").lower() in ("true", "1", "yes"):
+        logger.info(json.dumps({
+            "task": "scan_due_monitors",
+            "status": "skipped",
+            "reason": "scheduler_disabled"
+        }))
+        return "skipped_scheduler_disabled"
+
     if not supabase:
         raise RuntimeError("Supabase client not initialized")
 
