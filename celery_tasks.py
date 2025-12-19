@@ -83,8 +83,16 @@ class BaseTask(Task):
                 # This works for tasks defined as functions
                 arg_names = self.run.__code__.co_varnames
                 if arg_names:
-                    first_arg_name = arg_names[1] if arg_names[0] == 'self' else arg_names[0]
-                    if first_arg_name in ['monitor_id', 'report_id']:
+                    # Check if 'self' is the first argument (method bound)
+                    if arg_names[0] == 'self':
+                        if len(arg_names) > 1:
+                            first_arg_name = arg_names[1]
+                        else:
+                            first_arg_name = None
+                    else:
+                        first_arg_name = arg_names[0]
+
+                    if first_arg_name and first_arg_name in ['monitor_id', 'report_id']:
                          context[first_arg_name] = args[0]
             except Exception:
                 pass
