@@ -6,3 +6,4 @@ fpdf
 python-dateutil
 fastapi
 uvicorn
+gevent
