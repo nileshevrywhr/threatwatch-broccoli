@@ -13,3 +13,6 @@ celerybeat-schedule
 celerybeat.pid
 beat.pid
 worker.pid
+
+# todos
+plan.md
