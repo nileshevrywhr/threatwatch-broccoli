@@ -15,6 +15,52 @@ This project uses an asynchronous architecture to handle long-running tasks. Her
 
 ---
 
+## Supabase Setup
+
+Before running the app, you need to create the database tables and storage bucket in your Supabase project.
+
+### 1. Database Tables
+Run the following SQL in the Supabase SQL Editor to create the required tables.
+
+```sql
+-- 1. Monitors Table
+create table monitors (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null, -- References auth.users(id) in a real app
+  query_text text not null,
+  frequency text not null check (frequency in ('daily', 'weekly', 'monthly')),
+  next_run_at timestamptz not null,
+  active boolean default true,
+  created_at timestamptz default now()
+);
+
+-- 2. Reports Table
+create table reports (
+  id uuid default gen_random_uuid() primary key,
+  monitor_id uuid references monitors(id) not null,
+  user_id uuid not null,
+  pdf_url text,
+  item_count int,
+  created_at timestamptz default now()
+);
+
+-- 3. Searches Table (Audit Log)
+create table searches (
+  id uuid default gen_random_uuid() primary key,
+  query_text text not null,
+  status text,
+  created_at timestamptz default now()
+);
+```
+
+### 2. Storage Bucket
+1.  Go to **Storage** in the Supabase Dashboard.
+2.  Create a new bucket named **`reports`**.
+3.  **Important:** Make the bucket **Public**.
+4.  (Optional) Add a policy to allow read/write access if you are restricting RLS, but keeping it Public is sufficient for the MVP to generate public download links.
+
+---
+
 ## Local Development Setup
 
 Follow these steps to run the entire system on your machine.
