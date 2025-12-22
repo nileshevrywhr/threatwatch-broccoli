@@ -30,8 +30,8 @@ if SUPABASE_URL and SUPABASE_KEY:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
 class MonitorRequest(BaseModel):
-    user_id: str
-    term: str
+    user_id: str = Field(..., min_length=1, max_length=50)
+    term: str = Field(..., min_length=1, max_length=100)
     frequency: Literal['daily', 'weekly', 'monthly']
 
 @app.post("/api/monitors")
@@ -75,7 +75,7 @@ async def create_monitor(monitor: MonitorRequest):
 
     except Exception as e:
         logger.error(f"Error creating monitor: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/api/monitors/{monitor_id}/test")
 async def test_monitor(monitor_id: str):
@@ -89,7 +89,7 @@ async def test_monitor(monitor_id: str):
         return {"task_id": task.id}
     except Exception as e:
         logger.error(f"Error triggering test scan for monitor {monitor_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to enqueue task")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/health")
 def health_check():
