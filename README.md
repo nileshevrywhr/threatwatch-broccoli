@@ -141,6 +141,42 @@ celery -A celery_app beat --loglevel=info
 
 ---
 
+## Quick Start: Try a Live Monitor
+
+Once your services are running, try these use cases to see the system in action.
+
+### Use Case 1: Monitor a Brand for Leaks
+Track if your company name or a competitor appears in recent search results.
+
+1.  **Create Monitor:**
+    ```bash
+    curl -X POST http://127.0.0.1:8000/api/monitors \
+      -H "Content-Type: application/json" \
+      -d '{
+        "user_id": "550e8400-e29b-41d4-a716-446655440001",
+        "term": "Tesla Cybercab leak",
+        "frequency": "daily"
+      }'
+    ```
+2.  **Result:** The system will immediately search Google, generate a PDF report, upload it to Supabase, and email it to you (if SMTP is configured).
+
+### Use Case 2: Track a Specific Vulnerability
+Keep an eye on a new CVE or exploit.
+
+1.  **Create Monitor:**
+    ```bash
+    curl -X POST http://127.0.0.1:8000/api/monitors \
+      -H "Content-Type: application/json" \
+      -d '{
+        "user_id": "test-user-2",
+        "term": "CVE-2024-1234 exploit",
+        "frequency": "weekly"
+      }'
+    ```
+2.  **Result:** A new weekly monitor is scheduled. The first report is generated immediately for review.
+
+---
+
 ## Deployment Guide (Railway)
 
 We deploy this project as **three separate services** within a single Railway project. All three services pull from the same GitHub repository but run different start commands.
