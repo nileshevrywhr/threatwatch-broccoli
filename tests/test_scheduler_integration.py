@@ -39,8 +39,8 @@ class TestSchedulerIntegration(unittest.TestCase):
         result = scan_due_monitors()
 
         # Verify
-        # 1. Task was enqueued
-        mock_delay.assert_called_with(monitor_id)
+        # 1. Task was enqueued with monitor data
+        mock_delay.assert_called_with(monitor_id, monitor_data=mock_data[0])
 
         # 2. Supabase Update was called with a FUTURE date
         # The exact date depends on 'now', but it should be > now
