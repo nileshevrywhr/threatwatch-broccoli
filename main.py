@@ -69,7 +69,10 @@ async def create_monitor(monitor: MonitorRequest):
         # Trigger immediate scan asynchronously
         # We use delay() to send it to the Celery broker.
         # This returns immediately (<200ms requirement).
-        scan_monitor_task.delay(monitor_id)
+        # Optimization: Pass the new monitor data to avoid an extra DB read in the worker
+        task_payload = new_monitor.copy()
+        task_payload["id"] = monitor_id
+        scan_monitor_task.delay(monitor_id, monitor_data=task_payload)
 
         return {"monitor_id": monitor_id}
 
