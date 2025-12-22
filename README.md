@@ -153,7 +153,7 @@ Track if your company name or a competitor appears in recent search results.
     curl -X POST http://127.0.0.1:8000/api/monitors \
       -H "Content-Type: application/json" \
       -d '{
-        "user_id": "test-user-1",
+        "user_id": "550e8400-e29b-41d4-a716-446655440001",
         "term": "Tesla Cybercab leak",
         "frequency": "daily"
       }'
