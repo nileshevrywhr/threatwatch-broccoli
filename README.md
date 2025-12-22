@@ -61,6 +61,31 @@ create table searches (
 
 ---
 
+## SMTP Configuration (Gmail)
+
+To enable email notifications, you need to configure an SMTP server. For the MVP, we recommend using a personal Gmail account or Google Workspace account with an **App Password**.
+
+### How to get a Google App Password
+1.  Go to your [Google Account Security page](https://myaccount.google.com/security).
+2.  Enable **2-Step Verification** if it isn't already.
+3.  Search for "App Passwords" in the search bar at the top (or look under "2-Step Verification").
+4.  Create a new App Password named "ThreatWatch".
+5.  Copy the 16-character code (remove spaces).
+
+### SMTP Settings
+Use these values in your `.env` file (or Railway variables):
+
+| Variable | Value |
+| :--- | :--- |
+| `SMTP_HOST` | `smtp.gmail.com` |
+| `SMTP_PORT` | `587` |
+| `SMTP_USE_TLS` | `true` |
+| `SMTP_USERNAME` | `your.email@gmail.com` |
+| `SMTP_PASSWORD` | `your-16-char-app-password` |
+| `EMAIL_FROM` | `ThreatWatch <your.email@gmail.com>` |
+
+---
+
 ## Local Development Setup
 
 Follow these steps to run the entire system on your machine.
@@ -153,7 +178,7 @@ Track if your company name or a competitor appears in recent search results.
     curl -X POST http://127.0.0.1:8000/api/monitors \
       -H "Content-Type: application/json" \
       -d '{
-        "user_id": "550e8400-e29b-41d4-a716-446655440001",
+        "user_id": "test-user-1",
         "term": "Tesla Cybercab leak",
         "frequency": "daily"
       }'
