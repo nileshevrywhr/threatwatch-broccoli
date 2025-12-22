@@ -30,8 +30,8 @@ if SUPABASE_URL and SUPABASE_KEY:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
 class MonitorRequest(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=50)
-    term: str = Field(..., min_length=1, max_length=100)
+    user_id: str = Field(..., min_length=1, max_length=100)
+    term: str = Field(..., min_length=1, max_length=255)
     frequency: Literal['daily', 'weekly', 'monthly']
 
 @app.post("/api/monitors")
