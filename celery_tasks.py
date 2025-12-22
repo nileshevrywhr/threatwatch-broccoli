@@ -226,9 +226,10 @@ def _generate_pdf(report_content, monitor_id):
     soft_time_limit=60,
     time_limit=90
 )
-def scan_monitor_task(self, monitor_id: str):
+def scan_monitor_task(self, monitor_id: str, monitor_data: dict = None):
     """
     Worker task: Scans for a monitor, generates a report, and saves it.
+    Accepts optional monitor_data to avoid redundant DB fetch.
     """
     if not supabase:
         logger.error("Supabase client not initialized")
@@ -240,12 +241,16 @@ def scan_monitor_task(self, monitor_id: str):
 
     try:
         # 1. Fetch monitor configuration
-        response = supabase.table("monitors").select("*").eq("id", monitor_id).execute()
-        if not response.data:
-            logger.error(f"Monitor not found: {monitor_id}")
-            return None
+        monitor = monitor_data
 
-        monitor = response.data[0]
+        # If no data provided or missing critical fields, fetch from DB
+        if not monitor or not monitor.get("query_text"):
+            response = supabase.table("monitors").select("*").eq("id", monitor_id).execute()
+            if not response.data:
+                logger.error(f"Monitor not found: {monitor_id}")
+                return None
+            monitor = response.data[0]
+
         query_text = monitor.get("query_text")
 
         if not query_text:
@@ -357,7 +362,8 @@ def scan_due_monitors(self):
         monitor_id = monitor["id"]
 
         # 2. Enqueue task
-        scan_monitor_task.delay(monitor_id)
+        # Pass monitor data to avoid redundant fetch in worker
+        scan_monitor_task.delay(monitor_id, monitor_data=monitor)
         count_enqueued += 1
 
         # 3. Update next_run_at
