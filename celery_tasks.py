@@ -185,6 +185,11 @@ def _generate_pdf(report_content, monitor_id):
         for item in report_content:
             title = item.get("title", "No Title").encode('latin-1', 'replace').decode('latin-1')
             link = item.get("link", "#").encode('latin-1', 'replace').decode('latin-1')
+
+            # Sentinel 🛡️ Security Fix: Validate link scheme to prevent PDF XSS (e.g., javascript:)
+            if not link.lower().startswith(('http://', 'https://')):
+                link = "#"
+
             snippet = item.get("snippet", "").encode('latin-1', 'replace').decode('latin-1')
             score = item.get("score", 0)
 
