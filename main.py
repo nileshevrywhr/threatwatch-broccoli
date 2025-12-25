@@ -4,7 +4,7 @@ import redis
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
@@ -29,12 +29,57 @@ if SUPABASE_URL and SUPABASE_KEY:
     except Exception as e:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
+# Redis Client Setup
+redis_client = None
+try:
+    # Use the same broker URL for rate limiting
+    broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+    # Using from_url allows connection pooling (default)
+    redis_client = redis.from_url(broker_url)
+except Exception as e:
+    logger.error(f"Failed to initialize Redis client: {e}")
+
+# Rate Limiter
+def check_rate_limit(limit: int = 5, window: int = 60):
+    def dependency(request: Request):
+        if not redis_client:
+            # Fail open if Redis is not available
+            return
+
+        try:
+            # Identify client by IP, respecting X-Forwarded-For if present (simple extraction)
+            forwarded = request.headers.get("x-forwarded-for")
+            if forwarded:
+                client_ip = forwarded.split(",")[0].strip()
+            else:
+                client_ip = request.client.host if request.client else "unknown"
+
+            endpoint = request.url.path
+            key = f"rate_limit:{client_ip}:{endpoint}"
+
+            # Increment and check
+            current = redis_client.incr(key)
+            if current == 1:
+                redis_client.expire(key, window)
+
+            if current > limit:
+                logger.warning(f"Rate limit exceeded for {client_ip} on {endpoint}")
+                raise HTTPException(status_code=429, detail="Too Many Requests")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Fail open: Log error but allow request if Redis fails
+            logger.error(f"Rate limit check failed: {e}")
+            pass
+    return dependency
+
 class MonitorRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=50)
     term: str = Field(..., min_length=1, max_length=100)
     frequency: Literal['daily', 'weekly', 'monthly']
 
-@app.post("/api/monitors")
+@app.post("/api/monitors", dependencies=[Depends(check_rate_limit(limit=5, window=60))])
 async def create_monitor(monitor: MonitorRequest):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
@@ -80,7 +125,7 @@ async def create_monitor(monitor: MonitorRequest):
         logger.error(f"Error creating monitor: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.post("/api/monitors/{monitor_id}/test")
+@app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(check_rate_limit(limit=2, window=60))])
 async def test_monitor(monitor_id: str):
     """
     Triggers an immediate scan for a specific monitor.
