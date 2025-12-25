@@ -1,0 +1,3 @@
+## 2025-12-25 - Safe Batch Upserts
+**Learning:** PostgREST's `upsert` (used by Supabase client) supports batch operations via a list payload, effectively acting as an INSERT ... ON CONFLICT DO UPDATE. However, sending the full object blindly is unsafe due to race conditions with concurrent updates (e.g., status changes), while sending partial objects requires careful consideration of NOT NULL constraints on the INSERT path, even if updating existing rows.
+**Action:** Use partial upserts (e.g., `{"id": ..., "updated_field": ...}`) for batch updates of specific fields to avoid overwriting concurrent changes, but verify schema constraints if rows might be inserted.
