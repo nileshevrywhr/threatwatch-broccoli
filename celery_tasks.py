@@ -364,6 +364,9 @@ def scan_due_monitors(self):
 
     logger.info(f"Found {count_found} monitors due for scan.")
 
+    # List to hold batch updates for next_run_at
+    batch_updates = []
+
     for monitor in monitors:
         monitor_id = monitor["id"]
 
@@ -372,7 +375,7 @@ def scan_due_monitors(self):
         scan_monitor_task.delay(monitor_id, monitor_data=monitor)
         count_enqueued += 1
 
-        # 3. Update next_run_at
+        # 3. Calculate next_run_at
         frequency = monitor.get("frequency", "daily").lower()
         current_next_run = datetime.fromisoformat(monitor["next_run_at"].replace("Z", "+00:00"))
 
@@ -382,10 +385,18 @@ def scan_due_monitors(self):
             logger.warning(f"Invalid frequency '{frequency}' for monitor {monitor_id}, defaulting to daily.")
             next_date = calculate_next_run_at('daily', current_next_run)
 
-        supabase.table("monitors")\
-            .update({"next_run_at": next_date.isoformat()})\
-            .eq("id", monitor_id)\
-            .execute()
+        # Append to batch updates
+        # Using partial update with upsert (merge) to only modify next_run_at
+        batch_updates.append({
+            "id": monitor_id,
+            "next_run_at": next_date.isoformat()
+        })
+
+    # 4. Perform Batch Upsert
+    if batch_updates:
+        # Optimizing with batch upsert to reduce DB calls from N to 1
+        supabase.table("monitors").upsert(batch_updates).execute()
+        logger.info(f"Batch updated next_run_at for {len(batch_updates)} monitors.")
 
     return f"Found {count_found}, Enqueued {count_enqueued}"
 
