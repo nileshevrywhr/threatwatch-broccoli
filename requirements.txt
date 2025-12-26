@@ -7,3 +7,4 @@ python-dateutil
 fastapi
 uvicorn
 gevent
+PyJWT
