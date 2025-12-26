@@ -2,9 +2,10 @@ import os
 import logging
 import redis
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, List, Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
@@ -103,6 +104,91 @@ async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.get("/api/reports/{report_id}/download")
+def download_report(report_id: str, user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database service unavailable")
+
+    try:
+        # Fetch report verifying ownership
+        response = supabase.table("reports").select("pdf_url").eq("id", report_id).eq("user_id", user_id).execute()
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Report not found")
+
+        pdf_url = response.data[0].get("pdf_url")
+        if not pdf_url:
+             raise HTTPException(status_code=404, detail="Report URL not found")
+
+        return RedirectResponse(url=pdf_url, status_code=307)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in download_report: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.get("/api/feed")
+def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database service unavailable")
+
+    try:
+        # 1. Fetch Reports
+        reports_response = supabase.table("reports")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .order("created_at", desc=True)\
+            .range(offset, offset + limit - 1)\
+            .execute()
+
+        reports = reports_response.data
+        if not reports:
+            return []
+
+        # 2. Extract Monitor IDs to fetch queries
+        monitor_ids = list(set([r["monitor_id"] for r in reports if r.get("monitor_id")]))
+
+        # 3. Fetch Monitors
+        monitors_map = {}
+        if monitor_ids:
+             monitors_res = supabase.table("monitors").select("id, query_text").in_("id", monitor_ids).execute()
+             for m in monitors_res.data:
+                 monitors_map[m["id"]] = m["query_text"]
+
+        # 4. Construct Response
+        feed = []
+        for report in reports:
+            item_count = report.get("item_count", 0)
+
+            # Derive Severity
+            if item_count > 5:
+                severity = "high"
+            elif item_count > 0:
+                severity = "medium"
+            else:
+                severity = "low"
+
+            # Derive Summary
+            summary = f"Found {item_count} relevant threat items"
+
+            feed_item = {
+                "report_id": report["id"],
+                "term": monitors_map.get(report["monitor_id"], "Unknown Monitor"),
+                "created_at": report["created_at"],
+                "status": "completed",
+                "severity": severity,
+                "summary": summary,
+                "download_url": f"/api/reports/{report['id']}/download"
+            }
+            feed.append(feed_item)
+
+        return feed
+
+    except Exception as e:
+        logger.error(f"Error in get_feed: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/health/celery")
 def health_check_celery():
