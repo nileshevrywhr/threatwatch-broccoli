@@ -32,8 +32,10 @@ class TestSchedulerIntegration(unittest.TestCase):
 
         # 2. Update query
         mock_update = MagicMock()
-        mock_update.eq.return_value.execute.return_value.data = [{"id": monitor_id}]
+        mock_update.upsert.return_value.execute.return_value.data = [{"id": monitor_id}]
         mock_supabase.table.return_value.update.return_value = mock_update
+        # Also mock upsert for the new implementation
+        mock_supabase.table.return_value.upsert.return_value.execute.return_value.data = [{"id": monitor_id}]
 
         # Execute
         result = scan_due_monitors()
@@ -43,14 +45,18 @@ class TestSchedulerIntegration(unittest.TestCase):
         mock_delay.assert_called_with(monitor_id, monitor_data=mock_data[0])
 
         # 2. Supabase Update was called with a FUTURE date
-        # The exact date depends on 'now', but it should be > now
-        update_call_args = mock_supabase.table.return_value.update.call_args
-        update_payload = update_call_args[0][0] # First arg of update()
-
-        updated_next_run = datetime.fromisoformat(update_payload['next_run_at'])
-        self.assertGreater(updated_next_run, datetime.now(timezone.utc))
-
-        print(f"Verified next_run_at update: {updated_next_run} is in the future")
+        # Check upsert call
+        upsert_call_args = mock_supabase.table.return_value.upsert.call_args
+        if upsert_call_args:
+             update_payload = upsert_call_args[0][0] # First arg of upsert()
+             # It's a list of dicts
+             if isinstance(update_payload, list) and len(update_payload) > 0:
+                 update_item = update_payload[0]
+                 updated_next_run = datetime.fromisoformat(update_item['next_run_at'])
+                 self.assertGreater(updated_next_run, datetime.now(timezone.utc))
+                 print(f"Verified next_run_at update: {updated_next_run} is in the future")
+        else:
+            self.fail("Upsert was not called")
 
 if __name__ == '__main__':
     unittest.main()
