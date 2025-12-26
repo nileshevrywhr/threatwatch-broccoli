@@ -364,6 +364,8 @@ def scan_due_monitors(self):
 
     logger.info(f"Found {count_found} monitors due for scan.")
 
+    updates = []
+
     for monitor in monitors:
         monitor_id = monitor["id"]
 
@@ -372,7 +374,7 @@ def scan_due_monitors(self):
         scan_monitor_task.delay(monitor_id, monitor_data=monitor)
         count_enqueued += 1
 
-        # 3. Update next_run_at
+        # 3. Calculate next_run_at
         frequency = monitor.get("frequency", "daily").lower()
         current_next_run = datetime.fromisoformat(monitor["next_run_at"].replace("Z", "+00:00"))
 
@@ -382,10 +384,22 @@ def scan_due_monitors(self):
             logger.warning(f"Invalid frequency '{frequency}' for monitor {monitor_id}, defaulting to daily.")
             next_date = calculate_next_run_at('daily', current_next_run)
 
-        supabase.table("monitors")\
-            .update({"next_run_at": next_date.isoformat()})\
-            .eq("id", monitor_id)\
-            .execute()
+        # Optimization: Collect updates for batch processing
+        updates.append({
+            "id": monitor_id,
+            "next_run_at": next_date.isoformat()
+        })
+
+    # 4. Batch Update (Upsert)
+    # Reduces N+1 write operations to a single request
+    if updates:
+        try:
+            supabase.table("monitors").upsert(updates).execute()
+        except Exception as e:
+            logger.error(f"Failed to batch update next_run_at for monitors: {e}")
+            # If batch fails, we might want to fallback or just rely on next run picking them up again.
+            # Since we already enqueued the tasks, the worst case is they run again in 5 mins
+            # because next_run_at wasn't updated. This is better than partial inconsistent state.
 
     return f"Found {count_found}, Enqueued {count_enqueued}"
 
