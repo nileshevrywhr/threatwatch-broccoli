@@ -4,17 +4,23 @@ import redis
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
 import celery_app
 from celery_tasks import scan_monitor_task
 from utils.schedule_utils import calculate_next_run_at
+from utils.auth import verify_token
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Validate Essential Environment Variables at Startup
+if not os.environ.get("SUPABASE_JWT_SECRET"):
+    logger.critical("SUPABASE_JWT_SECRET is missing. Server cannot start.")
+    raise RuntimeError("SUPABASE_JWT_SECRET environment variable is required.")
 
 app = FastAPI()
 
@@ -30,12 +36,12 @@ if SUPABASE_URL and SUPABASE_KEY:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
 class MonitorRequest(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=50)
+    # user_id is removed as it's derived from the token
     term: str = Field(..., min_length=1, max_length=100)
     frequency: Literal['daily', 'weekly', 'monthly']
 
 @app.post("/api/monitors")
-async def create_monitor(monitor: MonitorRequest):
+async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
 
@@ -49,7 +55,7 @@ async def create_monitor(monitor: MonitorRequest):
 
         # Prepare data for insertion
         new_monitor = {
-            "user_id": monitor.user_id,
+            "user_id": user_id,
             "query_text": monitor.term,
             "frequency": monitor.frequency,
             "next_run_at": next_run_at.isoformat(),
@@ -81,7 +87,7 @@ async def create_monitor(monitor: MonitorRequest):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/api/monitors/{monitor_id}/test")
-async def test_monitor(monitor_id: str):
+async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
     """
     Triggers an immediate scan for a specific monitor.
     Does not synchronously validate existence (worker handles it).
