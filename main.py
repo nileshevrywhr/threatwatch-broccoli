@@ -112,7 +112,14 @@ def download_report(report_id: str, user_id: str = Depends(verify_token)):
 
     try:
         # Fetch report verifying ownership
-        response = supabase.table("reports").select("pdf_url").eq("id", report_id).eq("user_id", user_id).execute()
+        # We explicitly catch API errors that might result from invalid UUIDs
+        try:
+            response = supabase.table("reports").select("pdf_url").eq("id", report_id).eq("user_id", user_id).execute()
+        except Exception as e:
+            # Check if this is an invalid input syntax error (e.g. invalid UUID)
+            if "invalid input syntax for type uuid" in str(e) or "22P02" in str(e):
+                raise HTTPException(status_code=404, detail="Report not found")
+            raise e
 
         if not response.data:
             raise HTTPException(status_code=404, detail="Report not found")
