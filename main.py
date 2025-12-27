@@ -142,9 +142,11 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
         raise HTTPException(status_code=503, detail="Database service unavailable")
 
     try:
-        # 1. Fetch Reports
+        # 1. Fetch Reports with Monitors (Resource Embedding)
+        # Optimization: Fetch related monitor data in a single query to avoid N+1 problem.
+        # Select only necessary columns to reduce payload size.
         reports_response = supabase.table("reports")\
-            .select("*")\
+            .select("id, monitor_id, created_at, item_count, monitors(query_text)")\
             .eq("user_id", user_id)\
             .order("created_at", desc=True)\
             .range(offset, offset + limit - 1)\
@@ -154,17 +156,7 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
         if not reports:
             return []
 
-        # 2. Extract Monitor IDs to fetch queries
-        monitor_ids = list(set([r["monitor_id"] for r in reports if r.get("monitor_id")]))
-
-        # 3. Fetch Monitors
-        monitors_map = {}
-        if monitor_ids:
-             monitors_res = supabase.table("monitors").select("id, query_text").in_("id", monitor_ids).execute()
-             for m in monitors_res.data:
-                 monitors_map[m["id"]] = m["query_text"]
-
-        # 4. Construct Response
+        # 2. Construct Response
         feed = []
         for report in reports:
             item_count = report.get("item_count", 0)
@@ -180,9 +172,15 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
             # Derive Summary
             summary = f"Found {item_count} relevant threat items"
 
+            # Derive Term from embedded monitor data
+            monitor_data = report.get("monitors")
+            term = "Unknown Monitor"
+            if monitor_data and isinstance(monitor_data, dict):
+                term = monitor_data.get("query_text", "Unknown Monitor")
+
             feed_item = {
                 "report_id": report["id"],
-                "term": monitors_map.get(report["monitor_id"], "Unknown Monitor"),
+                "term": term,
                 "created_at": report["created_at"],
                 "status": "completed",
                 "severity": severity,
