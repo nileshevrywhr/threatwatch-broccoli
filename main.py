@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Literal, List, Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
@@ -24,6 +25,31 @@ if not os.environ.get("SUPABASE_JWT_SECRET"):
     raise RuntimeError("SUPABASE_JWT_SECRET environment variable is required.")
 
 app = FastAPI()
+
+# CORS Configuration
+# Rules:
+# 1. ALLOWED_ORIGINS: Comma-separated list of exact origins (default: [])
+# 2. ALLOWED_ORIGIN_REGEX: Regex string for Vercel preview/branch deploys (default: None)
+# 3. If ALLOWED_ORIGIN_REGEX is not set, no regex matching is applied.
+# 4. If ALLOWED_ORIGINS is not set, it defaults to empty list.
+# 5. Localhost must be explicitly added to ALLOWED_ORIGINS env var to work.
+
+allowed_origins_env = os.environ.get("ALLOWED_ORIGINS")
+if allowed_origins_env:
+    allow_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+else:
+    allow_origins = []
+
+allow_origin_regex = os.environ.get("ALLOWED_ORIGIN_REGEX")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Supabase Client Setup
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
