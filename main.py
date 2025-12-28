@@ -14,6 +14,7 @@ import celery_app
 from celery_tasks import scan_monitor_task
 from utils.schedule_utils import calculate_next_run_at
 from utils.auth import verify_token
+from utils.rate_limit import RateLimiter
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -67,7 +68,7 @@ class MonitorRequest(BaseModel):
     term: str = Field(..., min_length=1, max_length=100)
     frequency: Literal['daily', 'weekly', 'monthly']
 
-@app.post("/api/monitors")
+@app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60))])
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
@@ -113,7 +114,7 @@ async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_
         logger.error(f"Error creating monitor: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.post("/api/monitors/{monitor_id}/test")
+@app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60))])
 async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
     """
     Triggers an immediate scan for a specific monitor.
@@ -131,7 +132,7 @@ async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
 def health_check():
     return {"status": "ok"}
 
-@app.get("/api/reports/{report_id}/download")
+@app.get("/api/reports/{report_id}/download", dependencies=[Depends(RateLimiter(requests=30, window=60))])
 def download_report(report_id: str, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
@@ -162,7 +163,7 @@ def download_report(report_id: str, user_id: str = Depends(verify_token)):
         logger.error(f"Error in download_report: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.get("/api/feed")
+@app.get("/api/feed", dependencies=[Depends(RateLimiter(requests=60, window=60))])
 def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
