@@ -467,11 +467,10 @@ def scan_due_monitors(self):
             logger.warning(f"Invalid frequency '{frequency}' for monitor {monitor_id}, defaulting to daily.")
             next_date = calculate_next_run_at('daily', current_next_run)
 
-        # Optimization: Collect updates for batch processing
-        updates.append({
-            "id": monitor_id,
-            "next_run_at": next_date.isoformat()
-        })
+        # Optimization: Include the full monitor data to satisfy NOT NULL constraints during upsert
+        monitor_update = monitor.copy()
+        monitor_update["next_run_at"] = next_date.isoformat()
+        updates.append(monitor_update)
 
     # 4. Batch Update (Upsert)
     # Reduces N+1 write operations to a single request
