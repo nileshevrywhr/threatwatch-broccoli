@@ -13,6 +13,7 @@ from fpdf import FPDF
 from celery_app import app
 from utils.schedule_utils import calculate_next_run_at
 from google import genai
+from openai import OpenAI
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ if SUPABASE_URL and SUPABASE_KEY:
 GOOGLE_CSE_API_KEY = os.environ.get("GOOGLE_CSE_API_KEY")
 GOOGLE_CSE_CX = os.environ.get("GOOGLE_CSE_CX")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 class BaseTask(Task):
     """
@@ -169,50 +171,70 @@ def _calculate_score(item, now):
 
 def _generate_threat_report_llm(ranked_items, monitor_id, query_text):
     """
-    Uses Gemini to generate a threat intelligence report from ranked items.
+    Tries Gemini first, falls back to OpenRouter if Gemini fails (e.g. quota exhausted).
     """
-    if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set, skipping LLM report generation.")
-        return None
+    # Prepare context (top 15 items)
+    articles_context = ""
+    for idx, item in enumerate(ranked_items[:15], 1):
+        title = item.get("title", "No Title")
+        snippet = item.get("snippet", "No Snippet")
+        link = item.get("link", "#")
+        articles_context += f"{idx}. TITLE: {title}\n   SNIPPET: {snippet}\n   LINK: {link}\n\n"
 
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1'})
-        
-        # Prepare context (top 15 items to fit context window comfortably while providing enough data)
-        articles_context = ""
-        for idx, item in enumerate(ranked_items[:15], 1):
-            title = item.get("title", "No Title")
-            snippet = item.get("snippet", "No Snippet")
-            link = item.get("link", "#")
-            articles_context += f"{idx}. TITLE: {title}\n   SNIPPET: {snippet}\n   LINK: {link}\n\n"
+    prompt = f"""
+    You are a cybersecurity threat intelligence analyst. 
+    Analyze the following search results related to the threat/monitoring query: "{query_text}".
+    
+    Generate a clear, actionable threat intelligence report in structured Markdown format.
+    
+    The report must include:
+    1. **Executive Summary**: A high-level overview of the situation.
+    2. **Key Findings**: Grouping of related incidents or discussions found in the articles.
+    3. **Threat Analysis**: Assessment of severity, attack vectors, or trends observed.
+    4. **Recommended Actions**: Specific mitigation strategies or next steps for a security team.
+    5. **Source References**: Briefly list the key sources used (Titles and Links).
 
-        prompt = f"""
-        You are a cybersecurity threat intelligence analyst. 
-        Analyze the following search results related to the threat/monitoring query: "{query_text}".
-        
-        Generate a clear, actionable threat intelligence report in structured Markdown format.
-        
-        The report must include:
-        1. **Executive Summary**: A high-level overview of the situation.
-        2. **Key Findings**: Grouping of related incidents or discussions found in the articles.
-        3. **Threat Analysis**: Assessment of severity, attack vectors, or trends observed.
-        4. **Recommended Actions**: Specific mitigation strategies or next steps for a security team.
-        5. **Source References**: Briefly list the key sources used (Titles and Links).
+    If the search results are irrelevant or contain no real threats, state that clearly in the summary.
 
-        If the search results are irrelevant or contain no real threats, state that clearly in the summary.
+    Search Results:
+    {articles_context}
+    """
 
-        Search Results:
-        {articles_context}
-        """
+    # 1. Try Gemini
+    if GEMINI_API_KEY:
+        try:
+            logger.info("Attempting report generation with Gemini...")
+            client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1'})
+            response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            logger.warning(f"Gemini LLM generation failed or quota exceeded: {e}. Falling back to OpenRouter...")
 
-        response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
-        
-        # Return the markdown text
-        return response.text
+    # 2. Fallback to OpenRouter
+    if OPENROUTER_API_KEY:
+        try:
+            logger.info("Attempting report generation with OpenRouter (fallback)...")
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=OPENROUTER_API_KEY,
+            )
+            
+            completion = client.chat.completions.create(
+                model="google/gemini-2.0-flash-001", # Using a highly available model on OpenRouter
+                messages=[
+                    {"role": "system", "content": "You are a cybersecurity threat intelligence analyst."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            if completion.choices and completion.choices[0].message.content:
+                return completion.choices[0].message.content
+        except Exception as e:
+            logger.error(f"OpenRouter fallback failed: {e}")
 
-    except Exception as e:
-        logger.error(f"Gemini LLM generation failed: {e}")
-        return None
+    logger.error("All LLM providers failed to generate a report.")
+    return None
 
 def _generate_pdf(report_content, monitor_id):
     """
