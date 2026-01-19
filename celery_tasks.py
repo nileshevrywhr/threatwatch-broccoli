@@ -176,7 +176,7 @@ def _generate_threat_report_llm(ranked_items, monitor_id, query_text):
         return None
 
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1'})
         
         # Prepare context (top 15 items to fit context window comfortably while providing enough data)
         articles_context = ""
