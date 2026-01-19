@@ -12,7 +12,7 @@ from googleapiclient.discovery import build
 from fpdf import FPDF
 from celery_app import app
 from utils.schedule_utils import calculate_next_run_at
-import google.generativeai as genai
+from google import genai
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -176,7 +176,7 @@ def _generate_threat_report_llm(ranked_items, monitor_id, query_text):
         return None
 
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=GEMINI_API_KEY)
         
         # Prepare context (top 15 items to fit context window comfortably while providing enough data)
         articles_context = ""
@@ -205,8 +205,7 @@ def _generate_threat_report_llm(ranked_items, monitor_id, query_text):
         {articles_context}
         """
 
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         
         # Return the markdown text
         return response.text
