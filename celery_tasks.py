@@ -205,20 +205,13 @@ def _generate_threat_report_llm(ranked_items, monitor_id, query_text):
         {articles_context}
         """
 
-        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+        response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
         
         # Return the markdown text
         return response.text
 
     except Exception as e:
         logger.error(f"Gemini LLM generation failed: {e}")
-        try:
-            # Attempt to list models to help debug the 404
-            models = client.models.list()
-            model_names = [m.name for m in models]
-            logger.info(f"Available models: {model_names}")
-        except Exception as list_err:
-            logger.error(f"Failed to list models: {list_err}")
         return None
 
 def _generate_pdf(report_content, monitor_id):
