@@ -9,3 +9,4 @@ uvicorn
 gevent
 PyJWT
 google-genai
+openai
