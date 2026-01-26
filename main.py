@@ -75,6 +75,14 @@ class MonitorResponse(BaseModel):
     next_run_at: datetime
     status: str
 
+class ReportResponse(BaseModel):
+    report_id: str
+    created_at: datetime
+    severity: str
+    summary: str
+    status: str
+    download_url: str
+
 @app.post("/api/monitors")
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
     if not supabase:
@@ -150,6 +158,55 @@ async def get_monitors(user_id: str = Depends(verify_token)):
 
     except Exception as e:
         logger.error(f"Error fetching monitors: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.get("/api/monitors/{monitor_id}/reports", response_model=List[ReportResponse])
+async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database service unavailable")
+
+    try:
+        # 1. Verify monitor ownership
+        monitor_response = supabase.table("monitors").select("id").eq("id", monitor_id).eq("user_id", user_id).execute()
+        if not monitor_response.data:
+            raise HTTPException(status_code=404, detail="Monitor not found")
+
+        # 2. Fetch reports for the monitor
+        reports_response = supabase.table("reports").select("*").eq("monitor_id", monitor_id).order("created_at", desc=True).execute()
+
+        if not reports_response.data:
+            return []
+
+        # 3. Construct response
+        reports = []
+        for report in reports_response.data:
+            item_count = report.get("item_count", 0)
+
+            if item_count > 5:
+                severity = "high"
+            elif item_count > 0:
+                severity = "medium"
+            else:
+                severity = "low"
+
+            summary = f"Found {item_count} relevant threat items"
+
+            report_item = ReportResponse(
+                report_id=report["id"],
+                created_at=report["created_at"],
+                severity=severity,
+                summary=summary,
+                status="completed",
+                download_url=f"/api/reports/{report['id']}/download"
+            )
+            reports.append(report_item)
+
+        return reports
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching reports for monitor {monitor_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/api/monitors/{monitor_id}/test")
