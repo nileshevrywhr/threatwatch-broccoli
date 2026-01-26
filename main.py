@@ -67,6 +67,14 @@ class MonitorRequest(BaseModel):
     term: str = Field(..., min_length=1, max_length=100)
     frequency: Literal['daily', 'weekly', 'monthly']
 
+class MonitorResponse(BaseModel):
+    monitor_id: str
+    term: str
+    frequency: str
+    created_at: datetime
+    next_run_at: datetime
+    status: str
+
 @app.post("/api/monitors")
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
     if not supabase:
@@ -111,6 +119,37 @@ async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_
 
     except Exception as e:
         logger.error(f"Error creating monitor: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.get("/api/monitors", response_model=List[MonitorResponse])
+async def get_monitors(user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database service unavailable")
+
+    try:
+        response = supabase.table("monitors") \
+            .select("id, query_text, frequency, created_at, next_run_at, active") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=True) \
+            .execute()
+
+        if not response.data:
+            return []
+
+        monitors = [
+            MonitorResponse(
+                monitor_id=m["id"],
+                term=m["query_text"],
+                frequency=m["frequency"],
+                created_at=m["created_at"],
+                next_run_at=m["next_run_at"],
+                status="active" if m["active"] else "inactive"
+            ) for m in response.data
+        ]
+        return monitors
+
+    except Exception as e:
+        logger.error(f"Error fetching monitors: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/api/monitors/{monitor_id}/test")
