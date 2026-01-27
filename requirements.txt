@@ -8,5 +8,6 @@ fastapi
 uvicorn
 gevent
 PyJWT
+redis
 google-genai
 openai
