@@ -12,6 +12,8 @@ from googleapiclient.discovery import build
 from fpdf import FPDF
 from celery_app import app
 from utils.schedule_utils import calculate_next_run_at
+from google import genai
+from openai import OpenAI
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -30,6 +32,8 @@ if SUPABASE_URL and SUPABASE_KEY:
 # Google CSE Setup
 GOOGLE_CSE_API_KEY = os.environ.get("GOOGLE_CSE_API_KEY")
 GOOGLE_CSE_CX = os.environ.get("GOOGLE_CSE_CX")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 class BaseTask(Task):
     """
@@ -165,6 +169,73 @@ def _calculate_score(item, now):
 
     return score
 
+def _generate_threat_report_llm(ranked_items, monitor_id, query_text):
+    """
+    Tries Gemini first, falls back to OpenRouter if Gemini fails (e.g. quota exhausted).
+    """
+    # Prepare context (top 15 items)
+    articles_context = ""
+    for idx, item in enumerate(ranked_items[:15], 1):
+        title = item.get("title", "No Title")
+        snippet = item.get("snippet", "No Snippet")
+        link = item.get("link", "#")
+        articles_context += f"{idx}. TITLE: {title}\n   SNIPPET: {snippet}\n   LINK: {link}\n\n"
+
+    prompt = f"""
+    You are a cybersecurity threat intelligence analyst. 
+    Analyze the following search results related to the threat/monitoring query: "{query_text}".
+    
+    Generate a clear, actionable threat intelligence report in structured Markdown format.
+    
+    The report must include:
+    1. **Executive Summary**: A high-level overview of the situation.
+    2. **Key Findings**: Grouping of related incidents or discussions found in the articles.
+    3. **Threat Analysis**: Assessment of severity, attack vectors, or trends observed.
+    4. **Recommended Actions**: Specific mitigation strategies or next steps for a security team.
+    5. **Source References**: Briefly list the key sources used (Titles and Links).
+
+    If the search results are irrelevant or contain no real threats, state that clearly in the summary.
+
+    Search Results:
+    {articles_context}
+    """
+
+    # 1. Try Gemini
+    if GEMINI_API_KEY:
+        try:
+            logger.info("Attempting report generation with Gemini...")
+            client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1'})
+            response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            logger.warning(f"Gemini LLM generation failed or quota exceeded: {e}. Falling back to OpenRouter...")
+
+    # 2. Fallback to OpenRouter
+    if OPENROUTER_API_KEY:
+        try:
+            logger.info("Attempting report generation with OpenRouter (fallback)...")
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=OPENROUTER_API_KEY,
+            )
+            
+            completion = client.chat.completions.create(
+                model="google/gemini-2.0-flash-001", # Using a highly available model on OpenRouter
+                messages=[
+                    {"role": "system", "content": "You are a cybersecurity threat intelligence analyst."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            if completion.choices and completion.choices[0].message.content:
+                return completion.choices[0].message.content
+        except Exception as e:
+            logger.error(f"OpenRouter fallback failed: {e}")
+
+    logger.error("All LLM providers failed to generate a report.")
+    return None
+
 def _generate_pdf(report_content, monitor_id):
     """
     Generates a PDF from report content and uploads it to Supabase Storage.
@@ -181,26 +252,33 @@ def _generate_pdf(report_content, monitor_id):
         pdf.set_font("Arial", size=10)
         pdf.cell(200, 10, txt=f"Generated at: {datetime.now(timezone.utc).isoformat()}", ln=1)
         pdf.ln(10)
-
-        for item in report_content:
-            title = item.get("title", "No Title").encode('latin-1', 'replace').decode('latin-1')
-            link = item.get("link", "#").encode('latin-1', 'replace').decode('latin-1')
-
-            # Security: Validate URL scheme to prevent XSS (e.g., javascript:)
-            if not (link.lower().startswith('http://') or link.lower().startswith('https://')):
-                logger.warning(f"Sanitized unsafe link: {link}")
-                link = "#"
-
-            snippet = item.get("snippet", "").encode('latin-1', 'replace').decode('latin-1')
-            score = item.get("score", 0)
-
-            pdf.set_font("Arial", 'B', 10)
-            pdf.multi_cell(0, 5, txt=f"{title} (Score: {score})")
-            pdf.set_font("Arial", '', 9)
-            pdf.write(5, link, link)
-            pdf.ln()
-            pdf.multi_cell(0, 5, txt=snippet)
-            pdf.ln(5)
+        if isinstance(report_content, str):
+            # Content is the Markdown report from LLM
+            # FPDF doesn't natively support Markdown, so we treat it as plain text for now.
+            # We sanitize it for latin-1 to prevent crashes.
+            sanitized_content = report_content.encode('latin-1', 'replace').decode('latin-1')
+            pdf.multi_cell(0, 5, txt=sanitized_content)
+        else:
+            # Fallback: Content is a list of items
+            for item in report_content:
+                title = item.get("title", "No Title").encode('latin-1', 'replace').decode('latin-1')
+                link = item.get("link", "#").encode('latin-1', 'replace').decode('latin-1')
+    
+                # Security: Validate URL scheme to prevent XSS (e.g., javascript:)
+                if not (link.lower().startswith('http://') or link.lower().startswith('https://')):
+                    logger.warning(f"Sanitized unsafe link: {link}")
+                    link = "#"
+    
+                snippet = item.get("snippet", "").encode('latin-1', 'replace').decode('latin-1')
+                score = item.get("score", 0)
+    
+                pdf.set_font("Arial", 'B', 10)
+                pdf.multi_cell(0, 5, txt=f"{title} (Score: {score})")
+                pdf.set_font("Arial", '', 9)
+                pdf.write(5, link, link)
+                pdf.ln()
+                pdf.multi_cell(0, 5, txt=snippet)
+                pdf.ln(5)
 
         filename = f"report_{monitor_id}_{int(time.time())}.pdf"
         pdf_path = f"/tmp/{filename}"
@@ -278,8 +356,13 @@ def scan_monitor_task(self, monitor_id: str, monitor_data: dict = None):
 
         ranked_items.sort(key=lambda x: x["score"], reverse=True)
 
-        # 4. Generate Report Content & PDF
-        pdf_url = _generate_pdf(ranked_items, monitor_id)
+        # 4. Generate Report Content (LLM) & PDF
+        llm_report = _generate_threat_report_llm(ranked_items, monitor_id, query_text)
+        
+        # Use LLM report if available, otherwise fallback to ranked items list
+        report_content_for_pdf = llm_report if llm_report else ranked_items
+        
+        pdf_url = _generate_pdf(report_content_for_pdf, monitor_id)
 
         # 5. Store in Supabase
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -384,11 +467,10 @@ def scan_due_monitors(self):
             logger.warning(f"Invalid frequency '{frequency}' for monitor {monitor_id}, defaulting to daily.")
             next_date = calculate_next_run_at('daily', current_next_run)
 
-        # Optimization: Collect updates for batch processing
-        updates.append({
-            "id": monitor_id,
-            "next_run_at": next_date.isoformat()
-        })
+        # Optimization: Include the full monitor data to satisfy NOT NULL constraints during upsert
+        monitor_update = monitor.copy()
+        monitor_update["next_run_at"] = next_date.isoformat()
+        updates.append(monitor_update)
 
     # 4. Batch Update (Upsert)
     # Reduces N+1 write operations to a single request

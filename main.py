@@ -69,6 +69,23 @@ class MonitorRequest(BaseModel):
     frequency: Literal['daily', 'weekly', 'monthly']
 
 @app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60))])
+class MonitorResponse(BaseModel):
+    monitor_id: str
+    term: str
+    frequency: str
+    created_at: datetime
+    next_run_at: datetime
+    status: str
+
+class ReportResponse(BaseModel):
+    report_id: str
+    created_at: datetime
+    severity: str
+    summary: str
+    status: str
+    download_url: str
+
+@app.post("/api/monitors")
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
@@ -115,6 +132,87 @@ async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60))])
+@app.get("/api/monitors", response_model=List[MonitorResponse])
+async def get_monitors(user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database service unavailable")
+
+    try:
+        response = supabase.table("monitors") \
+            .select("id, query_text, frequency, created_at, next_run_at, active") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=True) \
+            .execute()
+
+        if not response.data:
+            return []
+
+        monitors = [
+            MonitorResponse(
+                monitor_id=m["id"],
+                term=m["query_text"],
+                frequency=m["frequency"],
+                created_at=m["created_at"],
+                next_run_at=m["next_run_at"],
+                status="active" if m["active"] else "inactive"
+            ) for m in response.data
+        ]
+        return monitors
+
+    except Exception as e:
+        logger.error(f"Error fetching monitors: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.get("/api/monitors/{monitor_id}/reports", response_model=List[ReportResponse])
+async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database service unavailable")
+
+    try:
+        # 1. Verify monitor ownership
+        monitor_response = supabase.table("monitors").select("id").eq("id", monitor_id).eq("user_id", user_id).execute()
+        if not monitor_response.data:
+            raise HTTPException(status_code=404, detail="Monitor not found")
+
+        # 2. Fetch reports for the monitor
+        reports_response = supabase.table("reports").select("*").eq("monitor_id", monitor_id).order("created_at", desc=True).execute()
+
+        if not reports_response.data:
+            return []
+
+        # 3. Construct response
+        reports = []
+        for report in reports_response.data:
+            item_count = report.get("item_count", 0)
+
+            if item_count > 5:
+                severity = "high"
+            elif item_count > 0:
+                severity = "medium"
+            else:
+                severity = "low"
+
+            summary = f"Found {item_count} relevant threat items"
+
+            report_item = ReportResponse(
+                report_id=report["id"],
+                created_at=report["created_at"],
+                severity=severity,
+                summary=summary,
+                status="completed",
+                download_url=f"/api/reports/{report['id']}/download"
+            )
+            reports.append(report_item)
+
+        return reports
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching reports for monitor {monitor_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.post("/api/monitors/{monitor_id}/test")
 async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
     """
     Triggers an immediate scan for a specific monitor.
@@ -169,9 +267,10 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
         raise HTTPException(status_code=503, detail="Database service unavailable")
 
     try:
-        # 1. Fetch Reports
+        # 1. Fetch Reports with Monitors (N+1 Optimization)
+        # We use Resource Embedding to fetch related monitor data in a single query
         reports_response = supabase.table("reports")\
-            .select("*")\
+            .select("*, monitors(id, query_text)")\
             .eq("user_id", user_id)\
             .order("created_at", desc=True)\
             .range(offset, offset + limit - 1)\
@@ -181,17 +280,7 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
         if not reports:
             return []
 
-        # 2. Extract Monitor IDs to fetch queries
-        monitor_ids = list(set([r["monitor_id"] for r in reports if r.get("monitor_id")]))
-
-        # 3. Fetch Monitors
-        monitors_map = {}
-        if monitor_ids:
-             monitors_res = supabase.table("monitors").select("id, query_text").in_("id", monitor_ids).execute()
-             for m in monitors_res.data:
-                 monitors_map[m["id"]] = m["query_text"]
-
-        # 4. Construct Response
+        # 2. Construct Response
         feed = []
         for report in reports:
             item_count = report.get("item_count", 0)
@@ -207,9 +296,18 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
             # Derive Summary
             summary = f"Found {item_count} relevant threat items"
 
+            # Extract term from embedded monitor data
+            term = "Unknown Monitor"
+            monitor_data = report.get("monitors")
+            if monitor_data and isinstance(monitor_data, dict):
+                 term = monitor_data.get("query_text", "Unknown Monitor")
+            # Handle case where monitor might be null or format differs
+            elif monitor_data and isinstance(monitor_data, list) and len(monitor_data) > 0:
+                 term = monitor_data[0].get("query_text", "Unknown Monitor")
+
             feed_item = {
                 "report_id": report["id"],
-                "term": monitors_map.get(report["monitor_id"], "Unknown Monitor"),
+                "term": term,
                 "created_at": report["created_at"],
                 "status": "completed",
                 "severity": severity,
