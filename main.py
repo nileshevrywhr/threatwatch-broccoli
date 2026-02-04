@@ -131,7 +131,6 @@ async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_
         logger.error(f"Error creating monitor: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60))])
 @app.get("/api/monitors", response_model=List[MonitorResponse])
 async def get_monitors(user_id: str = Depends(verify_token)):
     if not supabase:
@@ -212,7 +211,7 @@ async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_tok
         logger.error(f"Error fetching reports for monitor {monitor_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.post("/api/monitors/{monitor_id}/test")
+@app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60))])
 async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
     """
     Triggers an immediate scan for a specific monitor.
