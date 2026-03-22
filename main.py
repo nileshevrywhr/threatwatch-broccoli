@@ -68,7 +68,6 @@ class MonitorRequest(BaseModel):
     term: str = Field(..., min_length=1, max_length=100)
     frequency: Literal['daily', 'weekly', 'monthly']
 
-@app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60))])
 class MonitorResponse(BaseModel):
     monitor_id: str
     term: str
@@ -85,7 +84,7 @@ class ReportResponse(BaseModel):
     status: str
     download_url: str
 
-@app.post("/api/monitors")
+@app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60))])
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
