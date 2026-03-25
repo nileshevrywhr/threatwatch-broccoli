@@ -54,7 +54,7 @@ app.conf.update(
     beat_schedule={
         "scan_due_monitors": {
             "task": "scan_due_monitors",
-            "schedule": crontab(minute="*/5"),
+            "schedule": crontab(minute="*/30"),
         },
         "cleanup_old_reports": {
             "task": "cleanup_old_reports",
