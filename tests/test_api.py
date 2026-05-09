@@ -13,12 +13,17 @@ class TestApi(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.user_id = "test-user-id"
+        self._orig_deep_health = os.environ.get("HEALTHCHECK_DEEP_CELERY")
         # Mock verify_token to bypass actual token verification
         app.dependency_overrides[verify_token] = lambda: self.user_id
 
     def tearDown(self):
         # Clear the dependency override after each test
         app.dependency_overrides = {}
+        if self._orig_deep_health is None:
+            os.environ.pop("HEALTHCHECK_DEEP_CELERY", None)
+        else:
+            os.environ["HEALTHCHECK_DEEP_CELERY"] = self._orig_deep_health
 
     @patch("main.supabase")
     def test_get_monitors_success(self, mock_supabase):
@@ -147,6 +152,47 @@ class TestApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
+
+    @patch("main.celery_app.ping.delay")
+    @patch("main.celery_app.app.control.inspect")
+    @patch("main.redis.from_url")
+    def test_health_celery_light_mode(self, mock_from_url, mock_inspect, mock_delay):
+        os.environ["HEALTHCHECK_DEEP_CELERY"] = "false"
+
+        mock_redis_client = MagicMock()
+        mock_from_url.return_value = mock_redis_client
+
+        inspect_instance = MagicMock()
+        inspect_instance.ping.return_value = {"worker@local": {"ok": "pong"}}
+        mock_inspect.return_value = inspect_instance
+
+        response = self.client.get("/health/celery")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["mode"], "light")
+        mock_delay.assert_not_called()
+        inspect_instance.ping.assert_called_once()
+
+    @patch("main.celery_app.ping.delay")
+    @patch("main.celery_app.app.control.inspect")
+    @patch("main.redis.from_url")
+    def test_health_celery_deep_mode(self, mock_from_url, mock_inspect, mock_delay):
+        os.environ["HEALTHCHECK_DEEP_CELERY"] = "true"
+
+        mock_redis_client = MagicMock()
+        mock_from_url.return_value = mock_redis_client
+
+        async_result = MagicMock()
+        async_result.get.return_value = "pong"
+        mock_delay.return_value = async_result
+
+        response = self.client.get("/health/celery")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["mode"], "deep")
+        mock_delay.assert_called_once()
+        async_result.get.assert_called_once_with(timeout=3)
+        mock_inspect.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

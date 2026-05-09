@@ -228,7 +228,7 @@ async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
 def health_check():
     return {"status": "ok"}
 
-@app.get("/api/reports/{report_id}/download", dependencies=[Depends(RateLimiter(requests=30, window=60))])
+@app.get("/api/reports/{report_id}/download", dependencies=[Depends(RateLimiter(requests=120, window=300))])
 def download_report(report_id: str, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
@@ -259,7 +259,7 @@ def download_report(report_id: str, user_id: str = Depends(verify_token)):
         logger.error(f"Error in download_report: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.get("/api/feed", dependencies=[Depends(RateLimiter(requests=60, window=60))])
+@app.get("/api/feed", dependencies=[Depends(RateLimiter(requests=300, window=300))])
 def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")
@@ -325,6 +325,7 @@ def health_check_celery():
     redis_status = "ok"
     celery_status = "ok"
     details = []
+    deep_mode = os.environ.get("HEALTHCHECK_DEEP_CELERY", "false").lower() in ("true", "1", "yes")
 
     # 1. Check Redis
     try:
@@ -338,10 +339,16 @@ def health_check_celery():
 
     # 2. Check Celery Worker
     try:
-        # Check celery ping task
-        # timeout=3s as requested
-        res = celery_app.ping.delay()
-        res.get(timeout=3)
+        if deep_mode:
+            # Deep mode verifies end-to-end task execution and result retrieval.
+            res = celery_app.ping.delay()
+            res.get(timeout=3)
+        else:
+            # Light mode avoids backend result reads and uses control ping only.
+            inspect = celery_app.app.control.inspect(timeout=1)
+            ping_response = inspect.ping() if inspect else None
+            if not ping_response:
+                raise RuntimeError("No Celery workers responded to inspect ping")
     except Exception as e:
         celery_status = "error"
         details.append(f"Celery error: {str(e)}")
@@ -349,7 +356,8 @@ def health_check_celery():
 
     response = {
         "redis": redis_status,
-        "celery": celery_status
+        "celery": celery_status,
+        "mode": "deep" if deep_mode else "light"
     }
 
     if details:

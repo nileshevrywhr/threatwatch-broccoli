@@ -1,3 +1,4 @@
+# project files
 __pycache__/
 *.pyc
 *.pyo
@@ -7,6 +8,9 @@ env/
 venv/
 .env
 .DS_Store
+.vscode/
+docs
+scripts
 
 # Celery
 celerybeat-schedule
@@ -16,3 +20,4 @@ worker.pid
 
 # todos
 plan.md
+

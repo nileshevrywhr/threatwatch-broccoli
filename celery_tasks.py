@@ -6,7 +6,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor
 from celery import Task
 from supabase import create_client, Client
 from googleapiclient.discovery import build
@@ -304,36 +303,6 @@ def _generate_pdf(report_content, monitor_id):
         logger.error(f"Failed to generate/upload PDF: {e}")
         return None
 
-def _process_due_monitor(monitor):
-    """
-    Helper function to enqueue task and update schedule for a single monitor.
-    This logic is extracted to allow parallel execution.
-    """
-    monitor_id = monitor["id"]
-    try:
-        # 1. Enqueue task
-        # Pass monitor data to avoid redundant fetch in worker
-        scan_monitor_task.delay(monitor_id, monitor_data=monitor)
-
-        # 2. Update next_run_at
-        frequency = monitor.get("frequency", "daily").lower()
-        current_next_run = datetime.fromisoformat(monitor["next_run_at"].replace("Z", "+00:00"))
-
-        try:
-            next_date = calculate_next_run_at(frequency, current_next_run)
-        except ValueError:
-            logger.warning(f"Invalid frequency '{frequency}' for monitor {monitor_id}, defaulting to daily.")
-            next_date = calculate_next_run_at('daily', current_next_run)
-
-        supabase.table("monitors")\
-            .update({"next_run_at": next_date.isoformat()})\
-            .eq("id", monitor_id)\
-            .execute()
-        return True
-    except Exception as e:
-        logger.error(f"Error processing monitor {monitor_id}: {e}")
-        return False
-
 @app.task(
     base=BaseTask,
     bind=True,
@@ -478,12 +447,10 @@ def scan_due_monitors(self):
 
     logger.info(f"Found {count_found} monitors due for scan.")
 
-    # 2. Process in parallel
-    # Use ThreadPoolExecutor to handle I/O bound operations (Redis + HTTP) concurrently
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(_process_due_monitor, monitors))
+    count_enqueued = 0
     updates = []
 
+    # Enqueue each monitor once and prepare a single batch next_run_at update.
     for monitor in monitors:
         monitor_id = monitor["id"]
 
@@ -518,7 +485,6 @@ def scan_due_monitors(self):
             # Since we already enqueued the tasks, the worst case is they run again in 5 mins
             # because next_run_at wasn't updated. This is better than partial inconsistent state.
 
-    count_enqueued = sum(1 for r in results if r)
     return f"Found {count_found}, Enqueued {count_enqueued}"
 
 @app.task(
