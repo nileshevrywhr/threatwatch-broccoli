@@ -3,6 +3,7 @@ import logging
 import time
 import json
 import smtplib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
@@ -409,6 +410,29 @@ def scan_monitor_task(self, monitor_id: str, monitor_data: dict = None):
         logger.error(f"Error in scan_monitor_task: {e}", exc_info=True)
         raise e
 
+def _process_due_monitor(monitor: dict) -> dict:
+    """
+    Enqueues a scan task for the monitor and calculates its next_run_at.
+    Designed to run in a ThreadPoolExecutor — returns the update dict for batch upsert.
+    """
+    monitor_id = monitor["id"]
+    frequency = monitor.get("frequency", "daily").lower()
+    current_next_run = datetime.fromisoformat(monitor["next_run_at"].replace("Z", "+00:00"))
+
+    # Enqueue exactly once — this is the only call site for scan_monitor_task.delay
+    scan_monitor_task.delay(monitor_id, monitor_data=monitor)
+
+    try:
+        next_date = calculate_next_run_at(frequency, current_next_run)
+    except ValueError:
+        logger.warning(f"Invalid frequency '{frequency}' for monitor {monitor_id}, defaulting to daily.")
+        next_date = calculate_next_run_at("daily", current_next_run)
+
+    monitor_update = monitor.copy()
+    monitor_update["next_run_at"] = next_date.isoformat()
+    return monitor_update
+
+
 @app.task(
     base=BaseTask,
     bind=True,
@@ -450,29 +474,21 @@ def scan_due_monitors(self):
     count_enqueued = 0
     updates = []
 
-    # Enqueue each monitor once and prepare a single batch next_run_at update.
-    for monitor in monitors:
-        monitor_id = monitor["id"]
-
-        # 2. Enqueue task
-        # Pass monitor data to avoid redundant fetch in worker
-        scan_monitor_task.delay(monitor_id, monitor_data=monitor)
-        count_enqueued += 1
-
-        # 3. Calculate next_run_at
-        frequency = monitor.get("frequency", "daily").lower()
-        current_next_run = datetime.fromisoformat(monitor["next_run_at"].replace("Z", "+00:00"))
-
-        try:
-            next_date = calculate_next_run_at(frequency, current_next_run)
-        except ValueError:
-            logger.warning(f"Invalid frequency '{frequency}' for monitor {monitor_id}, defaulting to daily.")
-            next_date = calculate_next_run_at('daily', current_next_run)
-
-        # Optimization: Include the full monitor data to satisfy NOT NULL constraints during upsert
-        monitor_update = monitor.copy()
-        monitor_update["next_run_at"] = next_date.isoformat()
-        updates.append(monitor_update)
+    # 2 & 3. Enqueue tasks and calculate next_run_at in parallel.
+    # _process_due_monitor is the single call site for scan_monitor_task.delay — no duplicates.
+    with ThreadPoolExecutor(max_workers=min(10, count_found or 1)) as executor:
+        future_to_monitor = {
+            executor.submit(_process_due_monitor, monitor): monitor
+            for monitor in monitors
+        }
+        for future in as_completed(future_to_monitor):
+            monitor = future_to_monitor[future]
+            try:
+                update = future.result()
+                updates.append(update)
+                count_enqueued += 1
+            except Exception as exc:
+                logger.error(f"Failed to process monitor {monitor.get('id')}: {exc}")
 
     # 4. Batch Update (Upsert)
     # Reduces N+1 write operations to a single request
