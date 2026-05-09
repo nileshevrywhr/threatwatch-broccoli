@@ -13,17 +13,17 @@ class TestApi(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.user_id = "test-user-id"
-        self._orig_deep_health = os.environ.get("HEALTHCHECK_DEEP_CELERY")
+        self._orig_healthcheck_deep_celery = os.environ.get("HEALTHCHECK_DEEP_CELERY")
         # Mock verify_token to bypass actual token verification
         app.dependency_overrides[verify_token] = lambda: self.user_id
 
     def tearDown(self):
         # Clear the dependency override after each test
         app.dependency_overrides = {}
-        if self._orig_deep_health is None:
+        if self._orig_healthcheck_deep_celery is None:
             os.environ.pop("HEALTHCHECK_DEEP_CELERY", None)
         else:
-            os.environ["HEALTHCHECK_DEEP_CELERY"] = self._orig_deep_health
+            os.environ["HEALTHCHECK_DEEP_CELERY"] = self._orig_healthcheck_deep_celery
 
     @patch("main.supabase")
     def test_get_monitors_success(self, mock_supabase):
