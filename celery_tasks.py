@@ -416,27 +416,29 @@ def _render_structured_report_pdf(report_content, monitor_id):
     Returns the public URL.
     """
     try:
+        def _pdf_safe_text(value):
+            return str(value).encode('latin-1', 'replace').decode('latin-1')
+
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", size=12)
 
         pdf.cell(
-            200, 10, txt=f"Threat Report for Monitor {monitor_id}", ln=1, align="C")
+            200, 10, txt=_pdf_safe_text(f"Threat Report for Monitor {monitor_id}"), ln=1, align="C")
         pdf.ln(10)
 
         pdf.set_font("Arial", size=10)
         pdf.cell(
-            200, 10, txt=f"Generated at: {datetime.now(timezone.utc).isoformat()}", ln=1)
+            200, 10, txt=_pdf_safe_text(f"Generated at: {datetime.now(timezone.utc).isoformat()}"), ln=1)
         pdf.ln(10)
 
         if not isinstance(report_content, dict):
-            sanitized_content = str(report_content).encode(
-                'latin-1', 'replace').decode('latin-1')
+            sanitized_content = _pdf_safe_text(report_content)
             pdf.multi_cell(0, 5, txt=sanitized_content)
         else:
             def write_heading(text, level=1):
                 pdf.set_font("Arial", 'B', 12 if level == 1 else 10)
-                pdf.multi_cell(0, 6, txt=text)
+                pdf.multi_cell(0, 6, txt=_pdf_safe_text(text))
                 pdf.set_font("Arial", '', 10)
 
             def write_bullets(items):
@@ -446,10 +448,10 @@ def _render_structured_report_pdf(report_content, monitor_id):
                             "text") or entry.get("rationale") or json.dumps(entry)
                     else:
                         label = str(entry)
-                    pdf.multi_cell(0, 5, txt=f"- {label}")
+                    pdf.multi_cell(0, 5, txt=_pdf_safe_text(f"- {label}"))
 
             write_heading("Executive Summary")
-            pdf.multi_cell(0, 5, txt=str(
+            pdf.multi_cell(0, 5, txt=_pdf_safe_text(
                 report_content.get("executive_summary", "")))
             pdf.ln(2)
 
@@ -458,7 +460,8 @@ def _render_structured_report_pdf(report_content, monitor_id):
             if key_findings:
                 write_bullets(key_findings)
             else:
-                pdf.multi_cell(0, 5, txt="- No distinct findings identified.")
+                pdf.multi_cell(0, 5, txt=_pdf_safe_text(
+                    "- No distinct findings identified."))
             pdf.ln(2)
 
             write_heading("Ranked Threats")
@@ -473,23 +476,25 @@ def _render_structured_report_pdf(report_content, monitor_id):
                     urgency = threat.get("urgency", "medium")
                     pdf.set_font("Arial", 'B', 10)
                     pdf.multi_cell(
-                        0, 5, txt=f"{threat.get('rank', '?')}. {title} (impact {impact_score}, confidence {confidence_score}, urgency {urgency})")
+                        0, 5, txt=_pdf_safe_text(f"{threat.get('rank', '?')}. {title} (impact {impact_score}, confidence {confidence_score}, urgency {urgency})"))
                     pdf.set_font("Arial", '', 9)
                     pdf.multi_cell(
-                        0, 5, txt=f"Rationale: {threat.get('rationale', '')}")
+                        0, 5, txt=_pdf_safe_text(f"Rationale: {threat.get('rationale', '')}"))
                     pdf.multi_cell(
-                        0, 5, txt=f"Attack vector: {threat.get('attack_vector', 'unknown')}")
+                        0, 5, txt=_pdf_safe_text(f"Attack vector: {threat.get('attack_vector', 'unknown')}"))
                     affected_assets = threat.get("affected_assets", [])
                     if affected_assets:
                         pdf.multi_cell(
-                            0, 5, txt=f"Affected assets: {', '.join(map(str, affected_assets))}")
+                            0, 5, txt=_pdf_safe_text(f"Affected assets: {', '.join(map(str, affected_assets))}"))
                     mitigation_now = threat.get("mitigation_now", [])
                     if mitigation_now:
-                        pdf.multi_cell(0, 5, txt="Immediate actions:")
+                        pdf.multi_cell(0, 5, txt=_pdf_safe_text(
+                            "Immediate actions:"))
                         write_bullets(mitigation_now)
                     pdf.ln(2)
             else:
-                pdf.multi_cell(0, 5, txt="- No ranked threats identified.")
+                pdf.multi_cell(0, 5, txt=_pdf_safe_text(
+                    "- No ranked threats identified."))
 
             write_heading("Recommended Actions")
             recommended_actions = report_content.get("recommended_actions", [])
@@ -497,7 +502,7 @@ def _render_structured_report_pdf(report_content, monitor_id):
                 write_bullets(recommended_actions)
             else:
                 pdf.multi_cell(
-                    0, 5, txt="- Review sources manually and tighten monitoring query.")
+                    0, 5, txt=_pdf_safe_text("- Review sources manually and tighten monitoring query."))
             pdf.ln(2)
 
             write_heading("Source References")
@@ -510,9 +515,10 @@ def _render_structured_report_pdf(report_content, monitor_id):
                     url = source.get("url", "#")
                     score = source.get("score", 0)
                     pdf.multi_cell(
-                        0, 5, txt=f"- {title} ({url}) [score {score}]")
+                        0, 5, txt=_pdf_safe_text(f"- {title} ({url}) [score {score}]"))
             else:
-                pdf.multi_cell(0, 5, txt="- No source references available.")
+                pdf.multi_cell(0, 5, txt=_pdf_safe_text(
+                    "- No source references available."))
 
         filename = f"report_{monitor_id}_{int(time.time())}.pdf"
         pdf_path = f"/tmp/{filename}"
