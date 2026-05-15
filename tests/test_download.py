@@ -1,11 +1,13 @@
-from main import app, verify_token
-from fastapi.testclient import TestClient
 import os
 import unittest
 from unittest.mock import MagicMock, patch
 
 # Must be set before importing main, which validates this at module load time
 os.environ.setdefault("SUPABASE_JWT_SECRET", "test-secret")
+
+# noqa: E402 - intentional late import so env var is set first
+from fastapi.testclient import TestClient  # noqa: E402
+from main import app, verify_token  # noqa: E402
 
 
 class TestDownloadReport(unittest.TestCase):
