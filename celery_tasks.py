@@ -270,6 +270,13 @@ def _extract_json_payload(text: str) -> dict | None:
 
 
 def _normalize_structured_report(report_data: dict, query_text: str, ranked_items: list[dict]) -> dict:
+    def _coerce_list(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
     threats = report_data.get("ranked_threats") or []
     if not isinstance(threats, list):
         threats = []
@@ -284,13 +291,13 @@ def _normalize_structured_report(report_data: dict, query_text: str, ranked_item
             "impact_score": threat.get("impact_score", 0),
             "confidence_score": threat.get("confidence_score", 0),
             "urgency": threat.get("urgency", "medium"),
-            "affected_assets": threat.get("affected_assets", []),
+            "affected_assets": _coerce_list(threat.get("affected_assets")),
             "attack_vector": threat.get("attack_vector", "unknown"),
-            "evidence_source_ids": threat.get("evidence_source_ids", []),
+            "evidence_source_ids": _coerce_list(threat.get("evidence_source_ids")),
             "rationale": threat.get("rationale", ""),
-            "mitigation_now": threat.get("mitigation_now", []),
-            "mitigation_24h": threat.get("mitigation_24h", []),
-            "mitigation_7d": threat.get("mitigation_7d", []),
+            "mitigation_now": _coerce_list(threat.get("mitigation_now")),
+            "mitigation_24h": _coerce_list(threat.get("mitigation_24h")),
+            "mitigation_7d": _coerce_list(threat.get("mitigation_7d")),
         })
 
     normalized_threats.sort(key=lambda item: item.get(
@@ -300,23 +307,17 @@ def _normalize_structured_report(report_data: dict, query_text: str, ranked_item
     if not executive_summary:
         executive_summary = f"No high-confidence threat summary could be generated for query: {query_text}."
 
-    key_findings = report_data.get("key_findings") or []
-    if not isinstance(key_findings, list):
-        key_findings = []
+    key_findings = _coerce_list(report_data.get("key_findings"))
 
-    recommended_actions = report_data.get("recommended_actions") or []
-    if not isinstance(recommended_actions, list):
-        recommended_actions = []
+    recommended_actions = _coerce_list(report_data.get("recommended_actions"))
 
-    source_references = report_data.get("source_references") or []
-    if not isinstance(source_references, list):
-        source_references = []
+    source_references = _coerce_list(report_data.get("source_references"))
 
     if not source_references:
         source_references = [
             {
                 "title": item.get("title", "No Title"),
-                "url": item.get("url", "#"),
+                "url": item.get("url") or item.get("link", "#"),
                 "source_id": item.get("source_id"),
                 "score": item.get("score", 0),
             }
@@ -441,8 +442,15 @@ def _render_structured_report_pdf(report_content, monitor_id):
                 pdf.multi_cell(0, 6, txt=_pdf_safe_text(text))
                 pdf.set_font("Arial", '', 10)
 
+            def to_list(value):
+                if value is None:
+                    return []
+                if isinstance(value, list):
+                    return value
+                return [value]
+
             def write_bullets(items):
-                for entry in items:
+                for entry in to_list(items):
                     if isinstance(entry, dict):
                         label = entry.get("title") or entry.get(
                             "text") or entry.get("rationale") or json.dumps(entry)
@@ -491,6 +499,16 @@ def _render_structured_report_pdf(report_content, monitor_id):
                         pdf.multi_cell(0, 5, txt=_pdf_safe_text(
                             "Immediate actions:"))
                         write_bullets(mitigation_now)
+                    mitigation_24h = threat.get("mitigation_24h", [])
+                    if mitigation_24h:
+                        pdf.multi_cell(0, 5, txt=_pdf_safe_text(
+                            "Actions within 24h:"))
+                        write_bullets(mitigation_24h)
+                    mitigation_7d = threat.get("mitigation_7d", [])
+                    if mitigation_7d:
+                        pdf.multi_cell(0, 5, txt=_pdf_safe_text(
+                            "Actions within 7d:"))
+                        write_bullets(mitigation_7d)
                     pdf.ln(2)
             else:
                 pdf.multi_cell(0, 5, txt=_pdf_safe_text(
@@ -834,9 +852,10 @@ def scan_monitor_task(self, monitor_id: str, monitor_data: dict = None):
             evidence_items or ranked_items, monitor_id, query_text)
 
         if structured_report:
-            report_content_for_pdf = structured_report
+            canonical_report = _normalize_structured_report(
+                structured_report, query_text, evidence_items or ranked_items)
         else:
-            report_content_for_pdf = {
+            fallback_report = {
                 "executive_summary": "No structured report could be generated.",
                 "key_findings": [],
                 "ranked_threats": [
@@ -867,8 +886,10 @@ def scan_monitor_task(self, monitor_id: str, monitor_data: dict = None):
                 ],
                 "signal_quality": {"mode": "fallback"},
             }
+            canonical_report = _normalize_structured_report(
+                fallback_report, query_text, evidence_items or ranked_items)
 
-        pdf_url = _generate_pdf(report_content_for_pdf, monitor_id)
+        pdf_url = _generate_pdf(canonical_report, monitor_id)
 
         # 5. Store in Supabase
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -888,7 +909,7 @@ def scan_monitor_task(self, monitor_id: str, monitor_data: dict = None):
             "monitor_id": monitor_id,
             "created_at": now_iso,
             "pdf_url": pdf_url,
-            "report_json": report_content_for_pdf,
+            "report_json": canonical_report,
         }
 
         data_with_count = report_data.copy()
