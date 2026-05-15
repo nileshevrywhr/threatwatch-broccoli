@@ -1,12 +1,20 @@
+from main import app, verify_token
+from fastapi.testclient import TestClient
+import os
 import unittest
 from unittest.mock import MagicMock, patch
-from fastapi.testclient import TestClient
-from main import app, verify_token
+
+# Must be set before importing main, which validates this at module load time
+os.environ.setdefault("SUPABASE_JWT_SECRET", "test-secret")
+
 
 class TestDownloadReport(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.mock_user_id = "user-123"
+        self._redis_patcher = patch(
+            "utils.rate_limit.redis_client", MagicMock())
+        self._redis_patcher.start()
 
     def test_download_report_success(self):
         """Test that an owner can download their report (redirects to PDF)."""
@@ -28,7 +36,8 @@ class TestDownloadReport(unittest.TestCase):
             # Override authentication to return our mock user
             app.dependency_overrides[verify_token] = lambda: self.mock_user_id
 
-            response = self.client.get(f"/api/reports/{report_id}/download", follow_redirects=False)
+            response = self.client.get(
+                f"/api/reports/{report_id}/download", follow_redirects=False)
 
             # Verify we get a 307 Redirect
             self.assertEqual(response.status_code, 307)
@@ -51,7 +60,8 @@ class TestDownloadReport(unittest.TestCase):
 
             app.dependency_overrides[verify_token] = lambda: self.mock_user_id
 
-            response = self.client.get(f"/api/reports/{report_id}/download", follow_redirects=False)
+            response = self.client.get(
+                f"/api/reports/{report_id}/download", follow_redirects=False)
 
             self.assertEqual(response.status_code, 404)
             self.assertEqual(response.json(), {"detail": "Report not found"})
@@ -70,7 +80,8 @@ class TestDownloadReport(unittest.TestCase):
 
             app.dependency_overrides[verify_token] = lambda: self.mock_user_id
 
-            response = self.client.get(f"/api/reports/{report_id}/download", follow_redirects=False)
+            response = self.client.get(
+                f"/api/reports/{report_id}/download", follow_redirects=False)
 
             self.assertEqual(response.status_code, 404)
             self.assertEqual(response.json(), {"detail": "Report not found"})
@@ -79,12 +90,15 @@ class TestDownloadReport(unittest.TestCase):
         """Test that 503 is returned if Supabase client is None."""
         # Patch main.supabase to be None
         with patch("main.supabase", None):
-             app.dependency_overrides[verify_token] = lambda: self.mock_user_id
-             response = self.client.get("/api/reports/123/download", follow_redirects=False)
-             self.assertEqual(response.status_code, 503)
+            app.dependency_overrides[verify_token] = lambda: self.mock_user_id
+            response = self.client.get(
+                "/api/reports/123/download", follow_redirects=False)
+            self.assertEqual(response.status_code, 503)
 
     def tearDown(self):
         app.dependency_overrides = {}
+        self._redis_patcher.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

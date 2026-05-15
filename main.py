@@ -2,7 +2,7 @@ import os
 import logging
 import redis
 from datetime import datetime, timezone
-from typing import Literal, List, Optional
+from typing import Literal, List, Optional, Any
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,7 +37,8 @@ app = FastAPI()
 
 allowed_origins_env = os.environ.get("ALLOWED_ORIGINS")
 if allowed_origins_env:
-    allow_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+    allow_origins = [origin.strip()
+                     for origin in allowed_origins_env.split(",") if origin.strip()]
 else:
     allow_origins = []
 
@@ -63,10 +64,12 @@ if SUPABASE_URL and SUPABASE_KEY:
     except Exception as e:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
+
 class MonitorRequest(BaseModel):
     # user_id is removed as it's derived from the token
     term: str = Field(..., min_length=1, max_length=100)
     frequency: Literal['daily', 'weekly', 'monthly']
+
 
 class MonitorResponse(BaseModel):
     monitor_id: str
@@ -76,6 +79,7 @@ class MonitorResponse(BaseModel):
     next_run_at: datetime
     status: str
 
+
 class ReportResponse(BaseModel):
     report_id: str
     created_at: datetime
@@ -83,11 +87,43 @@ class ReportResponse(BaseModel):
     summary: str
     status: str
     download_url: str
+    executive_summary: Optional[str] = None
+    top_threats: Optional[List[Any]] = None
+    source_references: Optional[List[Any]] = None
+
+
+def _derive_report_severity(report: dict) -> str:
+    report_json = report.get("report_json") or {}
+    ranked_threats = report_json.get(
+        "ranked_threats") if isinstance(report_json, dict) else None
+    if isinstance(ranked_threats, list) and ranked_threats:
+        top_threat = ranked_threats[0] if isinstance(
+            ranked_threats[0], dict) else {}
+        impact_score = top_threat.get("impact_score", 0)
+        try:
+            impact_score = float(impact_score)
+        except (TypeError, ValueError):
+            impact_score = 0
+
+        if impact_score >= 80:
+            return "high"
+        if impact_score >= 50:
+            return "medium"
+        return "low"
+
+    item_count = report.get("item_count", 0)
+    if item_count > 5:
+        return "high"
+    if item_count > 0:
+        return "medium"
+    return "low"
+
 
 @app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60))])
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
     if not supabase:
-        raise HTTPException(status_code=503, detail="Database service unavailable")
+        raise HTTPException(
+            status_code=503, detail="Database service unavailable")
 
     try:
         # Calculate next_run_at
@@ -112,7 +148,8 @@ async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_
         response = supabase.table("monitors").insert(new_monitor).execute()
 
         if not response.data:
-            raise HTTPException(status_code=500, detail="Failed to create monitor")
+            raise HTTPException(
+                status_code=500, detail="Failed to create monitor")
 
         monitor_id = response.data[0].get("id")
 
@@ -130,10 +167,12 @@ async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_
         logger.error(f"Error creating monitor: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
+
 @app.get("/api/monitors", response_model=List[MonitorResponse])
 async def get_monitors(user_id: str = Depends(verify_token)):
     if not supabase:
-        raise HTTPException(status_code=503, detail="Database service unavailable")
+        raise HTTPException(
+            status_code=503, detail="Database service unavailable")
 
     try:
         response = supabase.table("monitors") \
@@ -161,19 +200,23 @@ async def get_monitors(user_id: str = Depends(verify_token)):
         logger.error(f"Error fetching monitors: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
+
 @app.get("/api/monitors/{monitor_id}/reports", response_model=List[ReportResponse])
 async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_token)):
     if not supabase:
-        raise HTTPException(status_code=503, detail="Database service unavailable")
+        raise HTTPException(
+            status_code=503, detail="Database service unavailable")
 
     try:
         # 1. Verify monitor ownership
-        monitor_response = supabase.table("monitors").select("id").eq("id", monitor_id).eq("user_id", user_id).execute()
+        monitor_response = supabase.table("monitors").select("id").eq(
+            "id", monitor_id).eq("user_id", user_id).execute()
         if not monitor_response.data:
             raise HTTPException(status_code=404, detail="Monitor not found")
 
         # 2. Fetch reports for the monitor
-        reports_response = supabase.table("reports").select("*").eq("monitor_id", monitor_id).order("created_at", desc=True).execute()
+        reports_response = supabase.table("reports").select(
+            "*").eq("monitor_id", monitor_id).order("created_at", desc=True).execute()
 
         if not reports_response.data:
             return []
@@ -182,15 +225,23 @@ async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_tok
         reports = []
         for report in reports_response.data:
             item_count = report.get("item_count", 0)
+            report_json = report.get("report_json") or {}
 
-            if item_count > 5:
-                severity = "high"
-            elif item_count > 0:
-                severity = "medium"
-            else:
-                severity = "low"
+            severity = _derive_report_severity(report)
 
-            summary = f"Found {item_count} relevant threat items"
+            executive_summary = report_json.get(
+                "executive_summary") if isinstance(report_json, dict) else None
+            summary = executive_summary or f"Found {item_count} relevant threat items"
+
+            top_threats = []
+            source_references = []
+            if isinstance(report_json, dict):
+                ranked_threats = report_json.get("ranked_threats") or []
+                if isinstance(ranked_threats, list):
+                    top_threats = ranked_threats[:3]
+                refs = report_json.get("source_references") or []
+                if isinstance(refs, list):
+                    source_references = refs[:5]
 
             report_item = ReportResponse(
                 report_id=report["id"],
@@ -198,7 +249,10 @@ async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_tok
                 severity=severity,
                 summary=summary,
                 status="completed",
-                download_url=f"/api/reports/{report['id']}/download"
+                download_url=f"/api/reports/{report['id']}/download",
+                executive_summary=executive_summary,
+                top_threats=top_threats,
+                source_references=source_references,
             )
             reports.append(report_item)
 
@@ -209,6 +263,7 @@ async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_tok
     except Exception as e:
         logger.error(f"Error fetching reports for monitor {monitor_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
 
 @app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60))])
 async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
@@ -221,23 +276,28 @@ async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
         task = scan_monitor_task.delay(monitor_id)
         return {"task_id": task.id}
     except Exception as e:
-        logger.error(f"Error triggering test scan for monitor {monitor_id}: {e}")
+        logger.error(
+            f"Error triggering test scan for monitor {monitor_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
+
 @app.get("/api/reports/{report_id}/download", dependencies=[Depends(RateLimiter(requests=120, window=300))])
 def download_report(report_id: str, user_id: str = Depends(verify_token)):
     if not supabase:
-        raise HTTPException(status_code=503, detail="Database service unavailable")
+        raise HTTPException(
+            status_code=503, detail="Database service unavailable")
 
     try:
         # Fetch report verifying ownership
         # We explicitly catch API errors that might result from invalid UUIDs
         try:
-            response = supabase.table("reports").select("pdf_url").eq("id", report_id).eq("user_id", user_id).execute()
+            response = supabase.table("reports").select("pdf_url").eq(
+                "id", report_id).eq("user_id", user_id).execute()
         except Exception as e:
             # Check if this is an invalid input syntax error (e.g. invalid UUID)
             if "invalid input syntax for type uuid" in str(e) or "22P02" in str(e):
@@ -249,7 +309,7 @@ def download_report(report_id: str, user_id: str = Depends(verify_token)):
 
         pdf_url = response.data[0].get("pdf_url")
         if not pdf_url:
-             raise HTTPException(status_code=404, detail="Report URL not found")
+            raise HTTPException(status_code=404, detail="Report URL not found")
 
         return RedirectResponse(url=pdf_url, status_code=307)
 
@@ -259,10 +319,12 @@ def download_report(report_id: str, user_id: str = Depends(verify_token)):
         logger.error(f"Error in download_report: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
+
 @app.get("/api/feed", dependencies=[Depends(RateLimiter(requests=300, window=300))])
 def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_token)):
     if not supabase:
-        raise HTTPException(status_code=503, detail="Database service unavailable")
+        raise HTTPException(
+            status_code=503, detail="Database service unavailable")
 
     try:
         # 1. Fetch Reports with Monitors (N+1 Optimization)
@@ -282,26 +344,32 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
         feed = []
         for report in reports:
             item_count = report.get("item_count", 0)
+            report_json = report.get("report_json") or {}
 
-            # Derive Severity
-            if item_count > 5:
-                severity = "high"
-            elif item_count > 0:
-                severity = "medium"
-            else:
-                severity = "low"
+            severity = _derive_report_severity(report)
 
-            # Derive Summary
-            summary = f"Found {item_count} relevant threat items"
+            executive_summary = report_json.get(
+                "executive_summary") if isinstance(report_json, dict) else None
+            summary = executive_summary or f"Found {item_count} relevant threat items"
+
+            top_threats = []
+            source_references = []
+            if isinstance(report_json, dict):
+                ranked_threats = report_json.get("ranked_threats") or []
+                if isinstance(ranked_threats, list):
+                    top_threats = ranked_threats[:3]
+                refs = report_json.get("source_references") or []
+                if isinstance(refs, list):
+                    source_references = refs[:5]
 
             # Extract term from embedded monitor data
             term = "Unknown Monitor"
             monitor_data = report.get("monitors")
             if monitor_data and isinstance(monitor_data, dict):
-                 term = monitor_data.get("query_text", "Unknown Monitor")
+                term = monitor_data.get("query_text", "Unknown Monitor")
             # Handle case where monitor might be null or format differs
             elif monitor_data and isinstance(monitor_data, list) and len(monitor_data) > 0:
-                 term = monitor_data[0].get("query_text", "Unknown Monitor")
+                term = monitor_data[0].get("query_text", "Unknown Monitor")
 
             feed_item = {
                 "report_id": report["id"],
@@ -310,6 +378,9 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
                 "status": "completed",
                 "severity": severity,
                 "summary": summary,
+                "executive_summary": executive_summary,
+                "top_threats": top_threats,
+                "source_references": source_references,
                 "download_url": f"/api/reports/{report['id']}/download"
             }
             feed.append(feed_item)
@@ -320,16 +391,19 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
         logger.error(f"Error in get_feed: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
+
 @app.get("/health/celery")
 def health_check_celery():
     redis_status = "ok"
     celery_status = "ok"
     details = []
-    deep_mode = os.environ.get("HEALTHCHECK_DEEP_CELERY", "false").lower() in ("true", "1", "yes")
+    deep_mode = os.environ.get(
+        "HEALTHCHECK_DEEP_CELERY", "false").lower() in ("true", "1", "yes")
 
     # 1. Check Redis
     try:
-        broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+        broker_url = os.environ.get(
+            "CELERY_BROKER_URL", "redis://localhost:6379/0")
         r = redis.from_url(broker_url)
         r.ping()
     except Exception as e:
@@ -348,7 +422,8 @@ def health_check_celery():
             inspect = celery_app.app.control.inspect(timeout=1)
             ping_response = inspect.ping() if inspect else None
             if not ping_response:
-                raise RuntimeError("No Celery workers responded to inspect ping")
+                raise RuntimeError(
+                    "No Celery workers responded to inspect ping")
     except Exception as e:
         celery_status = "error"
         details.append(f"Celery error: {str(e)}")

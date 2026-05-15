@@ -1,25 +1,30 @@
-import os
-# Set a dummy JWT secret for testing purposes before importing main
-os.environ['SUPABASE_JWT_SECRET'] = 'test-secret'
-
-import unittest
-from unittest.mock import patch, MagicMock
-from fastapi.testclient import TestClient
 from main import app, verify_token
+from fastapi.testclient import TestClient
+import os
+import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch, MagicMock
+
+# Must be set before importing main, which validates this at module load time
+os.environ.setdefault("SUPABASE_JWT_SECRET", "test-secret")
 
 
 class TestApi(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.user_id = "test-user-id"
-        self._orig_healthcheck_deep_celery = os.environ.get("HEALTHCHECK_DEEP_CELERY")
+        self._orig_healthcheck_deep_celery = os.environ.get(
+            "HEALTHCHECK_DEEP_CELERY")
+        self._redis_patcher = patch(
+            "utils.rate_limit.redis_client", MagicMock())
+        self._redis_patcher.start()
         # Mock verify_token to bypass actual token verification
         app.dependency_overrides[verify_token] = lambda: self.user_id
 
     def tearDown(self):
         # Clear the dependency override after each test
         app.dependency_overrides = {}
+        self._redis_patcher.stop()
         if self._orig_healthcheck_deep_celery is None:
             os.environ.pop("HEALTHCHECK_DEEP_CELERY", None)
         else:
@@ -120,6 +125,61 @@ class TestApi(unittest.TestCase):
         self.assertEqual(data[1]["severity"], "high")
 
     @patch("main.supabase")
+    def test_get_monitor_reports_structured_payload(self, mock_supabase):
+        monitor_id = "monitor-structured"
+
+        mock_monitor_execute = MagicMock()
+        mock_monitor_execute.data = [{"id": monitor_id}]
+
+        mock_reports_execute = MagicMock()
+        mock_reports_execute.data = [
+            {
+                "id": "report-structured-1",
+                "created_at": datetime(2023, 1, 3, 12, 0, 0, tzinfo=timezone.utc).isoformat(),
+                "item_count": 2,
+                "report_json": {
+                    "executive_summary": "Active exploitation observed on exposed services.",
+                    "ranked_threats": [
+                        {
+                            "rank": 1,
+                            "title": "Exploit chain in the wild",
+                            "impact_score": 92,
+                            "confidence_score": 84,
+                            "urgency": "high",
+                        },
+                        {
+                            "rank": 2,
+                            "title": "Lower confidence follow-on issue",
+                            "impact_score": 55,
+                            "confidence_score": 60,
+                            "urgency": "medium",
+                        },
+                    ],
+                    "source_references": [
+                        {"title": "Source A", "url": "https://example.com/a"},
+                        {"title": "Source B", "url": "https://example.com/b"},
+                    ],
+                },
+            }
+        ]
+
+        mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = mock_monitor_execute
+        mock_supabase.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value = mock_reports_execute
+
+        response = self.client.get(f"/api/monitors/{monitor_id}/reports")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data[0]["severity"], "high")
+        self.assertEqual(
+            data[0]["summary"], "Active exploitation observed on exposed services.")
+        self.assertEqual(data[0]["executive_summary"],
+                         "Active exploitation observed on exposed services.")
+        self.assertEqual(len(data[0]["top_threats"]), 2)
+        self.assertEqual(data[0]["top_threats"][0]["impact_score"], 92)
+        self.assertEqual(len(data[0]["source_references"]), 2)
+
+    @patch("main.supabase")
     def test_get_monitor_reports_not_found(self, mock_supabase):
         monitor_id = "monitor-not-found"
 
@@ -152,6 +212,42 @@ class TestApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
+
+    @patch("main.supabase")
+    def test_get_feed_structured_payload(self, mock_supabase):
+        mock_feed_execute = MagicMock()
+        mock_feed_execute.data = [
+            {
+                "id": "report-feed-1",
+                "created_at": datetime(2023, 1, 4, 12, 0, 0, tzinfo=timezone.utc).isoformat(),
+                "item_count": 1,
+                "report_json": {
+                    "executive_summary": "Critical issue requires immediate action.",
+                    "ranked_threats": [
+                        {"rank": 1, "title": "Critical issue",
+                            "impact_score": 88, "confidence_score": 77},
+                    ],
+                    "source_references": [
+                        {"title": "Source Feed", "url": "https://example.com/feed"},
+                    ],
+                },
+                "monitors": {"query_text": "critical issue"},
+            }
+        ]
+
+        mock_supabase.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value = mock_feed_execute
+
+        response = self.client.get("/api/feed")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["severity"], "high")
+        self.assertEqual(data[0]["summary"],
+                         "Critical issue requires immediate action.")
+        self.assertEqual(data[0]["executive_summary"],
+                         "Critical issue requires immediate action.")
+        self.assertEqual(data[0]["top_threats"][0]["impact_score"], 88)
 
     @patch("main.celery_app.ping.delay")
     @patch("main.celery_app.app.control.inspect")
@@ -193,6 +289,7 @@ class TestApi(unittest.TestCase):
         mock_delay.assert_called_once()
         async_result.get.assert_called_once_with(timeout=3)
         mock_inspect.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
