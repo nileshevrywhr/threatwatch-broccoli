@@ -32,9 +32,12 @@ projects:
             type: keyvalue
             name: osint-queue
             property: connectionString
+        - key: PNPM_IGNORE_BUILD_SCRIPTS
+          value: "false"   # Try forcing it
 
     databases:
     - name: umami-db
       plan: free
       databaseName: umami
       user: umami
+      region: singapore   # Force same region as web service
