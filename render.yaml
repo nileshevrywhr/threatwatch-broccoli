@@ -29,6 +29,7 @@ projects:
           generateValue: true
         - key: REDIS_URL
           fromService:
+            type: keyvalue
             name: osint-queue
             property: connectionString
 
