@@ -1,21 +1,39 @@
-services:
-  - type: web
-    name: umami
-    env: docker
-    repo: https://github.com/umami-software/umami.git
-    branch: master
-    plan: free
-    dockerCommand: pnpm start
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: umami-db
-          property: connectionString
-      - key: HASH_SALT
-        generateValue: true
+version: "1"
+projects:
+- name: signal canary
+  environments:
+  - name: Production
+    services:
+    - type: keyvalue
+      name: osint-queue
+      plan: free
+      region: singapore
+      maxmemoryPolicy: volatile-ttl
+      ipAllowList:
+      - source: 0.0.0.0/0
 
-databases:
-  - name: umami-db
-    plan: free
-    databaseName: umami
-    user: umami
+    - type: web
+      name: umami
+      env: docker
+      repo: https://github.com/umami-software/umami.git
+      branch: master
+      plan: free
+      region: singapore
+      dockerCommand: pnpm start
+      envVars:
+        - key: DATABASE_URL
+          fromDatabase:
+            name: umami-db
+            property: connectionString
+        - key: HASH_SALT
+          generateValue: true
+        - key: REDIS_URL
+          fromService:
+            name: osint-queue
+            property: connectionString   # This connects your existing Redis
+
+    - type: pgsql
+      name: umami-db
+      plan: free
+      databaseName: umami
+      user: umami
