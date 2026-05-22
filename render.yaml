@@ -30,10 +30,10 @@ projects:
         - key: REDIS_URL
           fromService:
             name: osint-queue
-            property: connectionString   # This connects your existing Redis
+            property: connectionString
 
-    - type: pgsql
-      name: umami-db
+    databases:
+    - name: umami-db
       plan: free
       databaseName: umami
       user: umami
