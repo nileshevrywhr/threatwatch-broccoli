@@ -32,12 +32,14 @@ projects:
             type: keyvalue
             name: osint-queue
             property: connectionString
+        - key: COREPACK_ENABLE_STRICT_MODE
+          value: "0"
         - key: PNPM_IGNORE_BUILD_SCRIPTS
-          value: "false"   # Try forcing it
+          value: "false"
 
     databases:
     - name: umami-db
       plan: free
       databaseName: umami
       user: umami
-      region: singapore   # Force same region as web service
+      region: singapore
