@@ -2,6 +2,7 @@ import os
 import logging
 import time
 import ssl
+import redis
 from celery import Celery
 from celery.schedules import crontab
 from celery.signals import worker_ready
@@ -69,6 +70,33 @@ import celery_tasks
 @worker_ready.connect
 def log_worker_start(sender, **kwargs):
     logger.info("Celery worker started successfully.")
+    enabled = os.environ.get(
+        "WORKER_STARTUP_SCAN_DUE_MONITORS", "true").lower() in ("true", "1", "yes")
+    if not enabled:
+        logger.info("Worker startup catch-up scan is disabled by env var.")
+        return
+
+    lock_acquired = True
+    lock_key = "threatwatch:startup_scan_due_monitors_lock"
+    lock_ttl_seconds = int(os.environ.get("WORKER_STARTUP_SCAN_LOCK_TTL", "300"))
+
+    try:
+        lock_client = redis.from_url(BROKER_URL, decode_responses=True)
+        # Avoid duplicate catch-up runs when multiple worker replicas restart together.
+        lock_acquired = bool(lock_client.set(lock_key, "1", nx=True, ex=lock_ttl_seconds))
+    except Exception as e:
+        logger.warning(f"Could not acquire startup scan lock; proceeding anyway: {e}")
+
+    if not lock_acquired:
+        logger.info("Skipping startup catch-up scan; lock already held by another worker.")
+        return
+
+    try:
+        celery_sender = sender.app if sender and getattr(sender, "app", None) else app
+        celery_sender.send_task("scan_due_monitors")
+        logger.info("Enqueued startup catch-up task: scan_due_monitors")
+    except Exception as e:
+        logger.error(f"Failed to enqueue startup catch-up task: {e}")
 
 @app.task(name="ping")
 def ping():
