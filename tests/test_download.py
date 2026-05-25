@@ -17,6 +17,7 @@ class TestDownloadReport(unittest.TestCase):
         self._redis_patcher = patch(
             "utils.rate_limit.redis_client", MagicMock())
         self._redis_patcher.start()
+        os.environ['ENABLE_BILLING'] = 'false'
 
     def test_download_report_success(self):
         """Test that an owner can download their report (redirects to PDF)."""

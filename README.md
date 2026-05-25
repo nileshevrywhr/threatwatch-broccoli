@@ -44,6 +44,17 @@ create table reports (
   created_at timestamptz default now()
 );
 
+-- 4. Profiles Table (User Subscription Data)
+create table profiles (
+  id uuid references auth.users(id) primary key,
+  email text,
+  subscription_plan text default "free",
+  subscription_status text default "inactive",
+  lemonsqueezy_customer_id text,
+  lemonsqueezy_subscription_id text,
+  created_at timestamptz default now()
+);
+
 -- 3. Searches Table (Audit Log)
 create table searches (
   id uuid default gen_random_uuid() primary key,
@@ -129,6 +140,15 @@ SMTP_USE_TLS=true
 SMTP_USERNAME=your_email@gmail.com
 SMTP_PASSWORD=your_app_password
 EMAIL_FROM=ThreatWatch <your_email@gmail.com>
+
+# Billing (Lemon Squeezy)
+LEMONSQUEEZY_API_KEY=your_api_key
+LEMONSQUEEZY_WEBHOOK_SECRET=your_webhook_secret
+LEMONSQUEEZY_STORE_ID=your_store_id
+LEMONSQUEEZY_PRO_VARIANT_ID=your_pro_variant_id
+LEMONSQUEEZY_ENTERPRISE_VARIANT_ID=your_enterprise_variant_id
+FRONTEND_BASE_URL=https://signalcanary.fyi
+ENABLE_BILLING=false
 
 # Feature Flags
 DISABLE_SCHEDULER=false

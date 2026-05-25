@@ -20,6 +20,7 @@ class TestApi(unittest.TestCase):
         self._redis_patcher = patch(
             "utils.rate_limit.redis_client", MagicMock())
         self._redis_patcher.start()
+        os.environ['ENABLE_BILLING'] = 'false'
         # Mock verify_token to bypass actual token verification
         app.dependency_overrides[verify_token] = lambda: self.user_id
 
