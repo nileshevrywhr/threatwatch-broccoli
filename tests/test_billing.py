@@ -66,14 +66,15 @@ class TestBilling(unittest.TestCase):
         payload_dict = {
             "meta": {
                 "event_name": "subscription_created",
-                "custom_data": {"user_id": "user-123"}
+                "custom_data": {"user_id": "user-123"},
+                "event_id": "evt-1"
             },
             "data": {
-                "id": "event-1",
+                "id": "sub-1",
                 "attributes": {
                     "status": "active",
-                    "variant_id": "123",
-                    "customer_id": "456"
+                    "variant_id": 123,
+                    "customer_id": 456
                 }
             }
         }
@@ -82,7 +83,7 @@ class TestBilling(unittest.TestCase):
         # Calculate correct signature
         signature = hmac.new(b"webhook-secret", payload_bytes, hashlib.sha256).hexdigest()
 
-        # Mock idempotency check
+        # Mock idempotency check (not found)
         mock_idempotency = MagicMock()
         mock_idempotency.data = []
         mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_idempotency
@@ -99,6 +100,40 @@ class TestBilling(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "success")
+
+        # Verify that idempotency check used event_id "evt-1" and NOT resource id "sub-1"
+        mock_supabase.table.return_value.select.return_value.eq.assert_any_call("id", "evt-1")
+
+    @patch("main.supabase")
+    @patch("utils.billing.LEMONSQUEEZY_WEBHOOK_SECRET", "webhook-secret")
+    def test_webhook_idempotency_duplicate(self, mock_supabase):
+        payload_dict = {
+            "meta": {
+                "event_name": "subscription_created",
+                "custom_data": {"user_id": "user-123"},
+                "event_id": "evt-1"
+            },
+            "data": {
+                "id": "sub-1",
+                "attributes": {"status": "active"}
+            }
+        }
+        payload_bytes = json.dumps(payload_dict).encode('utf-8')
+        signature = hmac.new(b"webhook-secret", payload_bytes, hashlib.sha256).hexdigest()
+
+        # Mock idempotency check (found)
+        mock_idempotency = MagicMock()
+        mock_idempotency.data = [{"id": "evt-1"}]
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_idempotency
+
+        response = self.client.post(
+            "/api/webhooks/lemonsqueezy",
+            content=payload_bytes,
+            headers={"X-Signature": signature, "Content-Type": "application/json"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ignored")
 
 if __name__ == "__main__":
     unittest.main()

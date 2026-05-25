@@ -525,7 +525,7 @@ async def get_subscription(user_id: str = Depends(verify_token)):
 @app.post("/api/webhooks/lemonsqueezy")
 async def lemonsqueezy_webhook(request: Request):
     if not supabase:
-        raise HTTPException(status_code=503, detail="Database unavailable")
+        return {"status": "error", "message": "Database unavailable"}
 
     # 1. Verify signature
     signature = request.headers.get("X-Signature")
@@ -550,7 +550,8 @@ async def lemonsqueezy_webhook(request: Request):
     custom_data = data.get("meta", {}).get("custom_data", {})
 
     user_id = custom_data.get("user_id")
-    event_id = data.get("data", {}).get("id") # Using event ID for idempotency
+    # Lemon Squeezy sends a unique event ID in the meta object
+    event_id = data.get("meta", {}).get("event_id") or data.get("data", {}).get("id") # Fallback to resource ID
 
     if not user_id:
         # Some events might not have user_id in custom_data if they are not from checkouts
@@ -564,8 +565,6 @@ async def lemonsqueezy_webhook(request: Request):
         if existing_event.data:
             logger.info(f"Duplicate webhook event: {event_id}")
             return {"status": "ignored"}
-
-        supabase.table("webhook_events").insert({"id": str(event_id), "type": event_name}).execute()
 
     # 4. Handle events
     if event_name in ["subscription_created", "subscription_updated"]:
@@ -600,4 +599,6 @@ async def lemonsqueezy_webhook(request: Request):
             "subscription_status": status
         }).eq("id", user_id).execute()
 
+    if event_id:
+        supabase.table("webhook_events").insert({"id": str(event_id), "type": event_name}).execute()
     return {"status": "success"}

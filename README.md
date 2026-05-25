@@ -48,8 +48,8 @@ create table reports (
 create table profiles (
   id uuid references auth.users(id) primary key,
   email text,
-  subscription_plan text default 'free',
-  subscription_status text default 'inactive',
+  subscription_plan text default "free",
+  subscription_status text default "inactive",
   lemonsqueezy_customer_id text,
   lemonsqueezy_subscription_id text,
   created_at timestamptz default now()
