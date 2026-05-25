@@ -11,3 +11,4 @@ PyJWT
 redis
 google-genai
 openai
+httpx

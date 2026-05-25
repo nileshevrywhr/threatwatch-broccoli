@@ -7,6 +7,7 @@ from typing import Literal, List, Optional, Any
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from fastapi import Request
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
@@ -14,6 +15,7 @@ import celery_app
 from celery_tasks import scan_monitor_task
 from utils.schedule_utils import calculate_next_run_at
 from utils.auth import verify_token
+from utils.billing import create_lemonsqueezy_checkout, verify_lemonsqueezy_signature
 from utils.rate_limit import RateLimiter
 
 # Configure Logging
@@ -121,6 +123,12 @@ def _derive_report_severity(report: dict) -> str:
 
 @app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60))])
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
+    if supabase and os.environ.get("ENABLE_BILLING", "false").lower() in ("true", "1", "yes"):
+        # Check for active subscription
+        profile_res = supabase.table("profiles").select("subscription_status").eq("id", user_id).execute()
+        status = profile_res.data[0].get("subscription_status") if profile_res.data else "inactive"
+        if status != "active":
+            raise HTTPException(status_code=402, detail="Active subscription required")
     if not supabase:
         raise HTTPException(
             status_code=503, detail="Database service unavailable")
@@ -267,6 +275,11 @@ async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_tok
 
 @app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60))])
 async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
+    if supabase and os.environ.get("ENABLE_BILLING", "false").lower() in ("true", "1", "yes"):
+        profile_res = supabase.table("profiles").select("subscription_status").eq("id", user_id).execute()
+        status = profile_res.data[0].get("subscription_status") if profile_res.data else "inactive"
+        if status != "active":
+            raise HTTPException(status_code=402, detail="Active subscription required")
     """
     Triggers an immediate scan for a specific monitor.
     Does not synchronously validate existence (worker handles it).
@@ -287,11 +300,14 @@ def health_check():
 
 
 @app.get("/api/reports/{report_id}/download", dependencies=[Depends(RateLimiter(requests=120, window=300))])
-def download_report(report_id: str, user_id: str = Depends(verify_token)):
+async def download_report(report_id: str, user_id: str = Depends(verify_token)):
+    if supabase and os.environ.get("ENABLE_BILLING", "false").lower() in ("true", "1", "yes"):
+        profile_res = supabase.table("profiles").select("subscription_status").eq("id", user_id).execute()
+        status = profile_res.data[0].get("subscription_status") if profile_res.data else "inactive"
+        if status != "active":
+            raise HTTPException(status_code=402, detail="Active subscription required")
     if not supabase:
-        raise HTTPException(
-            status_code=503, detail="Database service unavailable")
-
+        raise HTTPException(status_code=503, detail="Database service unavailable")
     try:
         # Fetch report verifying ownership
         # We explicitly catch API errors that might result from invalid UUIDs
@@ -441,3 +457,147 @@ def health_check_celery():
     if redis_status != "ok" or celery_status != "ok":
         raise HTTPException(status_code=503, detail=response)
     return response
+
+# Billing Models
+class CheckoutRequest(BaseModel):
+    plan: Literal["pro", "enterprise"]
+
+class SubscriptionResponse(BaseModel):
+    plan: str
+    status: str
+    lemonsqueezy_subscription_id: Optional[str] = None
+
+@app.post("/api/billing/create-checkout")
+async def create_checkout(request: CheckoutRequest, user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database service unavailable")
+
+    # 1. Fetch user email and check existing subscription
+    try:
+        profile_res = supabase.table("profiles").select("*").eq("id", user_id).execute()
+        if not profile_res.data:
+            # If profile doesn't exist, we can't get email easily without calling auth.admin which is risky
+            # But the profiles table SHOULD have been created on signup.
+            # As a fallback, we'll try to use the user_id as email if missing (not ideal) or error out.
+            raise HTTPException(status_code=404, detail="User profile not found")
+
+        profile = profile_res.data[0]
+        email = profile.get("email")
+        if not email:
+            raise HTTPException(status_code=400, detail="User email not found in profile")
+
+        if profile.get("subscription_status") == "active":
+            return {"checkout_url": None, "message": "User already has an active subscription"}
+
+        # 2. Create Lemon Squeezy checkout
+        checkout_url = await create_lemonsqueezy_checkout(user_id, email, request.plan)
+        if not checkout_url:
+            raise HTTPException(status_code=500, detail="Failed to create checkout session")
+
+        return {"checkout_url": checkout_url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in create_checkout: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.get("/api/billing/subscription", response_model=SubscriptionResponse)
+async def get_subscription(user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database service unavailable")
+
+    try:
+        response = supabase.table("profiles").select("subscription_plan, subscription_status, lemonsqueezy_subscription_id").eq("id", user_id).execute()
+        if not response.data:
+            return SubscriptionResponse(plan="free", status="inactive")
+
+        data = response.data[0]
+        return SubscriptionResponse(
+            plan=data.get("subscription_plan", "free"),
+            status=data.get("subscription_status", "inactive"),
+            lemonsqueezy_subscription_id=data.get("lemonsqueezy_subscription_id")
+        )
+    except Exception as e:
+        logger.error(f"Error fetching subscription: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.post("/api/webhooks/lemonsqueezy")
+async def lemonsqueezy_webhook(request: Request):
+    if not supabase:
+        return {"status": "error", "message": "Database unavailable"}
+
+    # 1. Verify signature
+    signature = request.headers.get("X-Signature")
+    if not signature:
+        logger.warning("Missing X-Signature header")
+        raise HTTPException(status_code=401, detail="Missing signature")
+
+    body = await request.body()
+    if not verify_lemonsqueezy_signature(body, signature):
+        logger.warning("Invalid signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # 2. Parse data
+    import json
+    try:
+        data = json.loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    event_name = data.get("meta", {}).get("event_name")
+    attributes = data.get("data", {}).get("attributes", {})
+    custom_data = data.get("meta", {}).get("custom_data", {})
+
+    user_id = custom_data.get("user_id")
+    event_id = data.get("data", {}).get("id") # Using event ID for idempotency
+
+    if not user_id:
+        # Some events might not have user_id in custom_data if they are not from checkouts
+        # But for subscription events we expect it.
+        logger.info(f"Webhook received without user_id: {event_name}")
+        return {"status": "ignored"}
+
+    # 3. Idempotency check
+    if event_id:
+        existing_event = supabase.table("webhook_events").select("id").eq("id", str(event_id)).execute()
+        if existing_event.data:
+            logger.info(f"Duplicate webhook event: {event_id}")
+            return {"status": "ignored"}
+
+        supabase.table("webhook_events").insert({"id": str(event_id), "type": event_name}).execute()
+
+    # 4. Handle events
+    if event_name in ["subscription_created", "subscription_updated"]:
+        status = attributes.get("status")
+        variant_id = str(attributes.get("variant_id"))
+        customer_id = str(attributes.get("customer_id"))
+        subscription_id = str(data.get("data", {}).get("id"))
+
+        # Determine plan
+        pro_id = os.environ.get("LEMONSQUEEZY_PRO_VARIANT_ID")
+        ent_id = os.environ.get("LEMONSQUEEZY_ENTERPRISE_VARIANT_ID")
+
+        plan = "free"
+        if variant_id == pro_id:
+            plan = "pro"
+        elif variant_id == ent_id:
+            plan = "enterprise"
+
+        supabase.table("profiles").update({
+            "subscription_plan": plan,
+            "subscription_status": status,
+            "lemonsqueezy_customer_id": customer_id,
+            "lemonsqueezy_subscription_id": subscription_id
+        }).eq("id", user_id).execute()
+
+    elif event_name == "subscription_cancelled":
+        # Subscription cancelled means it will not renew, but it might still be active until period end.
+        # Lemon Squeezy status usually stays 'active' until it actually expires.
+        # We'll just update the status as reported.
+        status = attributes.get("status")
+        supabase.table("profiles").update({
+            "subscription_status": status
+        }).eq("id", user_id).execute()
+
+    return {"status": "success"}
