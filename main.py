@@ -525,7 +525,7 @@ async def get_subscription(user_id: str = Depends(verify_token)):
 @app.post("/api/webhooks/lemonsqueezy")
 async def lemonsqueezy_webhook(request: Request):
     if not supabase:
-        return {"status": "error", "message": "Database unavailable"}
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     # 1. Verify signature
     signature = request.headers.get("X-Signature")
