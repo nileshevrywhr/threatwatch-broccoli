@@ -41,7 +41,7 @@ async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str) -> O
                     "email": email
                 },
                 "product_options": {
-                    "redirect_url": f"{FRONTEND_BASE_URL}/billing/success"
+                    "redirect_url": f"{FRONTEND_BASE_URL}/payment-success"
                 }
             },
             "relationships": {
@@ -61,35 +61,30 @@ async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str) -> O
         }
     }
 
-    async with httpx.AsyncClient() as client:
-        try:
+    headers = {
+        "Authorization": f"Bearer {LEMONSQUEEZY_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/vnd.api+json"
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{LEMONSQUEEZY_API_URL}/checkouts",
                 json=payload,
-                headers={
-                    "Accept": "application/vnd.api+json",
-                    "Content-Type": "application/vnd.api+json",
-                    "Authorization": f"Bearer {LEMONSQUEEZY_API_KEY}"
-                },
-                timeout=10.0
+                headers=headers,
+                timeout=30.0
             )
-            response.raise_for_status()
-            data = response.json()
-            return data["data"]["attributes"]["url"]
-        except Exception as e:
-            logger.error(f"Error creating Lemon Squeezy checkout: {e}")
-            if hasattr(e, 'response'):
-                logger.error(f"Response body: {e.response.text}")
-            return None
 
-def verify_lemonsqueezy_signature(payload: bytes, signature: str) -> bool:
-    """
-    Verifies the Lemon Squeezy webhook signature.
-    """
-    if not LEMONSQUEEZY_WEBHOOK_SECRET:
-        logger.error("LEMONSQUEEZY_WEBHOOK_SECRET not configured")
-        return False
+            if response.status_code in (200, 201):
+                data = response.json()
+                checkout_url = data["data"]["attributes"]["url"]
+                logger.info(f"Checkout created for user {user_id}")
+                return checkout_url
+            else:
+                logger.error(f"Lemon Squeezy API error: {response.status_code} - {response.text}")
+                return None
 
-    secret = LEMONSQUEEZY_WEBHOOK_SECRET.encode('utf-8')
-    digest = hmac.new(secret, payload, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(digest, signature)
+    except Exception as e:
+        logger.error(f"Error creating checkout: {str(e)}")
+        return None
