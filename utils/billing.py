@@ -11,8 +11,8 @@ LEMONSQUEEZY_API_KEY = os.environ.get("LEMONSQUEEZY_API_KEY")
 LEMONSQUEEZY_WEBHOOK_SECRET = os.environ.get("LEMONSQUEEZY_WEBHOOK_SECRET")
 LEMONSQUEEZY_STORE_ID = os.environ.get("LEMONSQUEEZY_STORE_ID")
 PRO_VARIANT_ID = os.environ.get("LEMONSQUEEZY_PRO_VARIANT_ID")
-ENTERPRISE_VARIANT_ID = os.environ.get("LEMONSQUEEZY_ENTERPRISE_VARIANT_ID")
-FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://www.signalcanary.fyi")
+EnterPRISE_VARIANT_ID = os.environ.get("LEMONSQUEEZY_ENTERPRISE_VARIANT_ID")
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://signalcanary.fyi")
 
 LEMONSQUEEZY_API_URL = "https://api.lemonsqueezy.com/v1"
 
@@ -41,8 +41,7 @@ async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str) -> O
                     "email": email
                 },
                 "product_options": {
-                    "redirect_url": f"{FRONTEND_BASE_URL}/billing/success",
-                    "cancel_url": f"{FRONTEND_BASE_URL}/billing/cancel"
+                    "redirect_url": f"{FRONTEND_BASE_URL}/billing/success"
                 }
             },
             "relationships": {
