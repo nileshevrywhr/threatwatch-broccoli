@@ -16,6 +16,36 @@ FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://signalcanary.fy
 
 LEMONSQUEEZY_API_URL = "https://api.lemonsqueezy.com/v1"
 
+__all__ = [
+    "verify_lemonsqueezy_signature",
+    "create_lemonsqueezy_checkout",
+]
+
+
+def verify_lemonsqueezy_signature(body: bytes, signature: str) -> bool:
+    """
+    Verify the HMAC-SHA256 signature of a Lemon Squeezy webhook request.
+
+    Args:
+        body: Raw request body bytes
+        signature: The X-Signature header value from the webhook
+
+    Returns:
+        True if the signature is valid, False otherwise
+    """
+    if not LEMONSQUEEZY_WEBHOOK_SECRET:
+        logger.error("LEMONSQUEEZY_WEBHOOK_SECRET not configured - cannot verify signature")
+        return False
+
+    expected = hmac.new(
+        key=LEMONSQUEEZY_WEBHOOK_SECRET.encode("utf-8"),
+        msg=body,
+        digestmod=hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(expected, signature)
+
+
 async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str) -> Optional[str]:
     """
     Creates a Lemon Squeezy checkout and returns the URL.
