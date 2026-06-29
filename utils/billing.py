@@ -12,7 +12,7 @@ LEMONSQUEEZY_WEBHOOK_SECRET = os.environ.get("LEMONSQUEEZY_WEBHOOK_SECRET")
 LEMONSQUEEZY_STORE_ID = os.environ.get("LEMONSQUEEZY_STORE_ID")
 PRO_VARIANT_ID = os.environ.get("LEMONSQUEEZY_PRO_VARIANT_ID")
 ENTERPRISE_VARIANT_ID = os.environ.get("LEMONSQUEEZY_ENTERPRISE_VARIANT_ID")
-FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://signalcanary.fyi")
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://www.signalcanary.fyi")
 
 LEMONSQUEEZY_API_URL = "https://api.lemonsqueezy.com/v1"
 
