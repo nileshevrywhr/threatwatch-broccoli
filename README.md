@@ -284,9 +284,11 @@ Invoke-RestMethod -Uri "$baseUrl/api/billing/create-checkout" -Method Post -Head
 ```
 
 ### 3. Run the Services
+
 You need to run **three separate terminal windows** to start the full system.
 
 **Terminal 1: Web API**
+
 ```bash
 uvicorn main:app --reload
 ```

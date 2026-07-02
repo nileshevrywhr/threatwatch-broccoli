@@ -15,7 +15,11 @@ import celery_app
 from celery_tasks import scan_monitor_task
 from utils.schedule_utils import calculate_next_run_at
 from utils.auth import verify_token
-from utils.billing import create_lemonsqueezy_checkout, verify_lemonsqueezy_signature
+from utils.billing import (
+    create_lemonsqueezy_checkout,
+    verify_lemonsqueezy_signature,
+    cancel_lemonsqueezy_subscription,
+)
 from utils.rate_limit import RateLimiter
 
 # Configure Logging
@@ -664,7 +668,7 @@ async def cancel_checkout(user_id: str = Depends(verify_token)):
         )
 
     try:
-        profile_res = supabase.table("profiles").select("subscription_plan, subscription_status").eq("id", user_id).execute()
+        profile_res = supabase.table("profiles").select("subscription_plan, subscription_status, lemonsqueezy_subscription_id").eq("id", user_id).execute()
         if not profile_res.data:
             raise _billing_error(
                 code="PROFILE_NOT_FOUND",
@@ -676,6 +680,7 @@ async def cancel_checkout(user_id: str = Depends(verify_token)):
         profile = profile_res.data[0]
         current_plan = profile.get("subscription_plan", "free")
         current_status = profile.get("subscription_status", "inactive")
+        lemonsqueezy_subscription_id = profile.get("lemonsqueezy_subscription_id")
         has_paid_plan = current_plan in ("pro", "enterprise")
 
         if not has_paid_plan and current_status != "active":
@@ -689,18 +694,35 @@ async def cancel_checkout(user_id: str = Depends(verify_token)):
                 },
             )
 
+        if not lemonsqueezy_subscription_id:
+            raise _billing_error(
+                code="PROVIDER_SUBSCRIPTION_MISSING",
+                message="Unable to cancel because provider subscription ID is missing.",
+                status_code=409,
+                details={"user_id": user_id},
+            )
+
+        provider_result = await cancel_lemonsqueezy_subscription(str(lemonsqueezy_subscription_id))
+        if not provider_result:
+            raise _billing_error(
+                code="PROVIDER_CANCEL_FAILED",
+                message="Failed to cancel subscription with billing provider.",
+                status_code=502,
+                details={"provider": "lemonsqueezy", "subscription_id": str(lemonsqueezy_subscription_id)},
+            )
+
         effective_at = datetime.now(timezone.utc).isoformat()
         supabase.table("profiles").update({
             "subscription_plan": "free",
-            "subscription_status": "cancelled",
+            "subscription_status": provider_result.get("status") or "cancelled",
         }).eq("id", user_id).execute()
 
         return {
             "code": "SUBSCRIPTION_CANCELLED",
             "message": "Subscription cancelled successfully.",
             "effective_plan": "free",
-            "effective_at": effective_at,
-            "subscription_status": "cancelled",
+            "effective_at": provider_result.get("ends_at") or effective_at,
+            "subscription_status": provider_result.get("status") or "cancelled",
         }
     except HTTPException:
         raise

@@ -19,6 +19,7 @@ LEMONSQUEEZY_API_URL = "https://api.lemonsqueezy.com/v1"
 __all__ = [
     "verify_lemonsqueezy_signature",
     "create_lemonsqueezy_checkout",
+    "cancel_lemonsqueezy_subscription",
 ]
 
 
@@ -117,4 +118,46 @@ async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str) -> O
 
     except Exception as e:
         logger.error(f"Error creating checkout: {str(e)}")
+        return None
+
+
+async def cancel_lemonsqueezy_subscription(subscription_id: str) -> Optional[Dict[str, Any]]:
+    """Cancels a Lemon Squeezy subscription and returns parsed attributes."""
+    if not LEMONSQUEEZY_API_KEY:
+        logger.error("Lemon Squeezy API Key not configured")
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {LEMONSQUEEZY_API_KEY}",
+        "Content-Type": "application/vnd.api+json",
+        "Accept": "application/vnd.api+json",
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(
+                f"{LEMONSQUEEZY_API_URL}/subscriptions/{subscription_id}",
+                headers=headers,
+                timeout=30.0,
+            )
+
+            if response.status_code in (200, 201):
+                data = response.json()
+                attributes = data.get("data", {}).get("attributes", {})
+                logger.info(f"Subscription cancelled on Lemon Squeezy: {subscription_id}")
+                return {
+                    "status": attributes.get("status"),
+                    "cancelled": attributes.get("cancelled"),
+                    "ends_at": attributes.get("ends_at"),
+                }
+
+            logger.error(
+                "Lemon Squeezy cancel API error for subscription %s: %s - %s",
+                subscription_id,
+                response.status_code,
+                response.text,
+            )
+            return None
+    except Exception as e:
+        logger.error("Error cancelling Lemon Squeezy subscription %s: %s", subscription_id, str(e))
         return None

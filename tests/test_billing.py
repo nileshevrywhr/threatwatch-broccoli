@@ -59,12 +59,19 @@ class TestBilling(unittest.TestCase):
         self.assertIn("active subscription", payload["message"].lower())
 
     @patch("main.supabase")
-    def test_cancel_active_paid_user_success(self, mock_supabase):
+    @patch("main.cancel_lemonsqueezy_subscription", new_callable=AsyncMock)
+    def test_cancel_active_paid_user_success(self, mock_cancel_provider, mock_supabase):
+        mock_cancel_provider.return_value = {
+            "status": "cancelled",
+            "cancelled": True,
+            "ends_at": "2026-08-01T00:00:00.000000Z",
+        }
         mock_profile = MagicMock()
         mock_profile.data = [{
             "id": "user-123",
             "subscription_plan": "pro",
             "subscription_status": "active",
+            "lemonsqueezy_subscription_id": "sub-123",
         }]
         mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_profile
         mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
@@ -76,7 +83,48 @@ class TestBilling(unittest.TestCase):
         self.assertEqual(payload["code"], "SUBSCRIPTION_CANCELLED")
         self.assertEqual(payload["effective_plan"], "free")
         self.assertEqual(payload["subscription_status"], "cancelled")
-        self.assertTrue(payload["effective_at"])
+        self.assertEqual(payload["effective_at"], "2026-08-01T00:00:00.000000Z")
+        mock_cancel_provider.assert_awaited_once_with("sub-123")
+
+    @patch("main.supabase")
+    @patch("main.cancel_lemonsqueezy_subscription", new_callable=AsyncMock)
+    def test_cancel_missing_provider_subscription_id_returns_conflict(self, mock_cancel_provider, mock_supabase):
+        mock_profile = MagicMock()
+        mock_profile.data = [{
+            "id": "user-123",
+            "subscription_plan": "pro",
+            "subscription_status": "active",
+            "lemonsqueezy_subscription_id": None,
+        }]
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_profile
+
+        response = self.client.post("/api/billing/cancel")
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.json()["detail"]
+        self.assertEqual(payload["code"], "PROVIDER_SUBSCRIPTION_MISSING")
+        mock_cancel_provider.assert_not_called()
+
+    @patch("main.supabase")
+    @patch("main.cancel_lemonsqueezy_subscription", new_callable=AsyncMock)
+    def test_cancel_provider_failure_returns_502(self, mock_cancel_provider, mock_supabase):
+        mock_cancel_provider.return_value = None
+
+        mock_profile = MagicMock()
+        mock_profile.data = [{
+            "id": "user-123",
+            "subscription_plan": "pro",
+            "subscription_status": "active",
+            "lemonsqueezy_subscription_id": "sub-123",
+        }]
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_profile
+
+        response = self.client.post("/api/billing/cancel")
+
+        self.assertEqual(response.status_code, 502)
+        payload = response.json()["detail"]
+        self.assertEqual(payload["code"], "PROVIDER_CANCEL_FAILED")
+        mock_cancel_provider.assert_awaited_once_with("sub-123")
 
     @patch("main.supabase")
     @patch("main.create_lemonsqueezy_checkout", new_callable=AsyncMock)
@@ -104,6 +152,7 @@ class TestBilling(unittest.TestCase):
             "id": "user-123",
             "subscription_plan": "free",
             "subscription_status": "inactive",
+            "lemonsqueezy_subscription_id": None,
         }]
         mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_profile
 
