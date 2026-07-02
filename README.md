@@ -8,10 +8,10 @@ ThreatWatch is a threat monitoring MVP that tracks keywords (e.g., "ransomware",
 
 This project uses an asynchronous architecture to handle long-running tasks. Here is why and how it works:
 
-*   **Web API (FastAPI):** Handles incoming HTTP requests (creating monitors, checking health). It **never** runs heavy tasks directly. Instead, it "enqueues" a task message to Redis and returns immediately.
-*   **Redis (The Broker):** Acts as a message queue (buffer). It holds task messages until a worker is free to pick them up.
-*   **Celery Worker:** A separate process that constantly watches Redis. When it sees a message (e.g., "scan monitor #123"), it picks it up, runs the search, generates the PDF, and sends the email. This can take seconds or minutes without affecting the API's speed.
-*   **Celery Beat (The Scheduler):** Another separate process that acts like a "cron" clock. It doesn't run tasks itself. It simply wakes up every few minutes to check which monitors are due and tells the Worker (via Redis) to scan them.
+- **Web API (FastAPI):** Handles incoming HTTP requests (creating monitors, checking health). It **never** runs heavy tasks directly. Instead, it "enqueues" a task message to Redis and returns immediately.
+- **Redis (The Broker):** Acts as a message queue (buffer). It holds task messages until a worker is free to pick them up.
+- **Celery Worker:** A separate process that constantly watches Redis. When it sees a message (e.g., "scan monitor #123"), it picks it up, runs the search, generates the PDF, and sends the email. This can take seconds or minutes without affecting the API's speed.
+- **Celery Beat (The Scheduler):** Another separate process that acts like a "cron" clock. It doesn't run tasks itself. It simply wakes up every few minutes to check which monitors are due and tells the Worker (via Redis) to scan them.
 
 ---
 
@@ -20,6 +20,7 @@ This project uses an asynchronous architecture to handle long-running tasks. Her
 Before running the app, you need to create the database tables and storage bucket in your Supabase project.
 
 ### 1. Database Tables
+
 Run the following SQL in the Supabase SQL Editor to create the required tables.
 
 ```sql
@@ -65,6 +66,7 @@ create table searches (
 ```
 
 ### 2. Storage Bucket
+
 1.  Go to **Storage** in the Supabase Dashboard.
 2.  Create a new bucket named **`reports`**.
 3.  **Important:** Make the bucket **Public**.
@@ -77,6 +79,7 @@ create table searches (
 To enable email notifications, you need to configure an SMTP server. For the MVP, we recommend using a personal Gmail account or Google Workspace account with an **App Password**.
 
 ### How to get a Google App Password
+
 1.  Go to your [Google Account Security page](https://myaccount.google.com/security).
 2.  Enable **2-Step Verification** if it isn't already.
 3.  Search for "App Passwords" in the search bar at the top (or look under "2-Step Verification").
@@ -84,16 +87,17 @@ To enable email notifications, you need to configure an SMTP server. For the MVP
 5.  Copy the 16-character code (remove spaces).
 
 ### SMTP Settings
+
 Use these values in your `.env` file (or Railway variables):
 
-| Variable | Value |
-| :--- | :--- |
-| `SMTP_HOST` | `smtp.gmail.com` |
-| `SMTP_PORT` | `587` |
-| `SMTP_USE_TLS` | `true` |
-| `SMTP_USERNAME` | `your.email@gmail.com` |
-| `SMTP_PASSWORD` | `your-16-char-app-password` |
-| `EMAIL_FROM` | `ThreatWatch <your.email@gmail.com>` |
+| Variable        | Value                                |
+| :-------------- | :----------------------------------- |
+| `SMTP_HOST`     | `smtp.gmail.com`                     |
+| `SMTP_PORT`     | `587`                                |
+| `SMTP_USE_TLS`  | `true`                               |
+| `SMTP_USERNAME` | `your.email@gmail.com`               |
+| `SMTP_PASSWORD` | `your-16-char-app-password`          |
+| `EMAIL_FROM`    | `ThreatWatch <your.email@gmail.com>` |
 
 ---
 
@@ -102,17 +106,20 @@ Use these values in your `.env` file (or Railway variables):
 Follow these steps to run the entire system on your machine.
 
 ### 1. Prerequisites
-*   Python 3.10+
-*   **Redis:** You can run it locally (`redis-server`) or use a cloud instance (Upstash).
-*   **Supabase Project:** For Database and Storage.
-*   **Google Custom Search Engine (CSE):** API Key and Search Engine ID (CX).
-*   **Gmail Account:** For sending emails (using an App Password).
+
+- Python 3.10+
+- **Redis:** You can run it locally (`redis-server`) or use a cloud instance (Upstash).
+- **Supabase Project:** For Database and Storage.
+- **Google Custom Search Engine (CSE):** API Key and Search Engine ID (CX).
+- **Gmail Account:** For sending emails (using an App Password).
 
 ### 2. Environment Variables
+
 Create a `.env` file in the root directory.
 
 **Recommended for Local Dev & MVP:** Use Gmail SMTP.
-*   **Important:** You must use a [Google App Password](https://myaccount.google.com/apppasswords), NOT your regular Gmail password.
+
+- **Important:** You must use a [Google App Password](https://myaccount.google.com/apppasswords), NOT your regular Gmail password.
 
 ```ini
 # Database (Supabase)
@@ -150,11 +157,33 @@ LEMONSQUEEZY_ENTERPRISE_VARIANT_ID=your_enterprise_variant_id
 FRONTEND_BASE_URL=https://signalcanary.fyi
 ENABLE_BILLING=false
 
-### Billing API Contracts (MVP Cancel -> Resubscribe)
+# Feature Flags
+DISABLE_SCHEDULER=false
+ENABLE_EMAIL_DELIVERY=false
+
+# Set specific retention policy if needed (default 30 days)
+RETENTION_DAYS=30
+```
+
+## Billing API Contracts (Frontend Integration)
 
 All billing endpoints require `Authorization: Bearer <token>`.
 
-#### POST /api/billing/create-checkout
+### Shared Error Shape
+
+Billing endpoint errors return this shape:
+
+```json
+{
+  "detail": {
+    "code": "STRING_CODE",
+    "message": "Human-readable message",
+    "details": {}
+  }
+}
+```
+
+### POST /api/billing/create-checkout
 
 Request body:
 
@@ -187,7 +216,7 @@ Already active subscription (409):
 }
 ```
 
-#### POST /api/billing/cancel
+### POST /api/billing/cancel
 
 Success (200):
 
@@ -216,23 +245,42 @@ No active paid subscription (409):
 }
 ```
 
-Error shape for billing endpoints (4xx/5xx):
+### Frontend Decision Rules
 
-```json
-{
-  "detail": {
-    "code": "STRING_CODE",
-    "message": "Human-readable message",
-    "details": {}
-  }
+1. On `POST /api/billing/create-checkout` success (`200`), always redirect to `checkout_url`.
+2. If `create-checkout` returns `409` with `detail.code = ACTIVE_SUBSCRIPTION`, show the message and render a cancel CTA.
+3. On `POST /api/billing/cancel` success (`200`), refresh billing state and allow retry of checkout.
+4. On `401`, route user to re-auth/login.
+5. For any other error, show `detail.message` as the primary UI error.
+
+### API-Level Validation Script (Safe Placeholders)
+
+Use this for end-to-end validation after deploy. Replace placeholders with non-sensitive values from your environment at runtime.
+
+```powershell
+cd "<path-to-threatwatch-broccoli>"
+(<conda-hook-path>)
+conda activate base
+
+$baseUrl = "https://<your-railway-web-api-domain>"
+$userId = "<test-user-id>"
+
+$token = python -c "import os,jwt; print(jwt.encode({'sub':'$userId'}, os.environ['SUPABASE_JWT_SECRET'], algorithm='HS256'))"
+$headers = @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" }
+
+Write-Host "--- 1) Active user requests checkout (expect 409 ACTIVE_SUBSCRIPTION) ---"
+try {
+  Invoke-RestMethod -Uri "$baseUrl/api/billing/create-checkout" -Method Post -Headers $headers -Body '{"plan":"pro"}'
+} catch {
+  $body = $_.ErrorDetails.Message | ConvertFrom-Json
+  $body | ConvertTo-Json -Depth 6
 }
-```
 
-# Feature Flags
-DISABLE_SCHEDULER=false
-ENABLE_EMAIL_DELIVERY=false
-# Set specific retention policy if needed (default 30 days)
-RETENTION_DAYS=30
+Write-Host "--- 2) Active paid user cancels (expect 200 SUBSCRIPTION_CANCELLED) ---"
+Invoke-RestMethod -Uri "$baseUrl/api/billing/cancel" -Method Post -Headers $headers | ConvertTo-Json -Depth 6
+
+Write-Host "--- 3) Cancelled user requests checkout (expect 200 checkout_url) ---"
+Invoke-RestMethod -Uri "$baseUrl/api/billing/create-checkout" -Method Post -Headers $headers -Body '{"plan":"pro"}' | ConvertTo-Json -Depth 6
 ```
 
 ### 3. Run the Services
@@ -242,33 +290,38 @@ You need to run **three separate terminal windows** to start the full system.
 ```bash
 uvicorn main:app --reload
 ```
-*   Runs on `http://127.0.0.1:8000`.
+
+- Runs on `http://127.0.0.1:8000`.
 
 **Terminal 2: Celery Worker**
+
 ```bash
 celery -A celery_app worker --loglevel=info
 ```
-*   Listens for tasks and executes scans.
+
+- Listens for tasks and executes scans.
 
 **Terminal 3: Celery Beat (Scheduler)**
+
 ```bash
 celery -A celery_app beat --loglevel=info
 ```
-*   Schedules recurring scans for due monitors.
+
+- Schedules recurring scans for due monitors.
 
 ### 4. How to Test Locally
+
 1.  **Create a Monitor:** Send a POST request to `http://127.0.0.1:8000/api/monitors` with a JSON body (use Postman or curl).
 2.  **Trigger a Scan:** The API will automatically trigger an immediate scan.
 3.  **Check Logs:** Look at **Terminal 2 (Worker)**. You should see "Received task: scan_monitor_task" followed by logs about searching and PDF generation.
 4.  **Verify Output:** Check your Supabase `reports` table and Storage bucket for the new PDF. Check your email inbox.
-
----
 
 ## Quick Start: Try a Live Monitor
 
 Once your services are running, try these use cases to see the system in action.
 
 ### Use Case 1: Monitor a Brand for Leaks
+
 Track if your company name or a competitor appears in recent search results.
 
 1.  **Create Monitor:**
@@ -276,7 +329,7 @@ Track if your company name or a competitor appears in recent search results.
     curl -X POST http://127.0.0.1:8000/api/monitors \
       -H "Content-Type: application/json" \
       -d '{
-        "user_id": "550e8400-e29b-41d4-a716-446655440001",
+        "user_id": "<test-user-id>",
         "term": "Tesla Cybercab leak",
         "frequency": "daily"
       }'
@@ -284,6 +337,7 @@ Track if your company name or a competitor appears in recent search results.
 2.  **Result:** The system will immediately search Google, generate a PDF report, upload it to Supabase, and email it to you (if SMTP is configured).
 
 ### Use Case 2: Track a Specific Vulnerability
+
 Keep an eye on a new CVE or exploit.
 
 1.  **Create Monitor:**
@@ -306,51 +360,53 @@ We deploy this project as **three separate services** within a single Railway pr
 
 ### 1. Railway Project Structure
 
-*   **Service 1: `web-api`** (The FastAPI Backend)
-*   **Service 2: `celery-worker`** (The Task Runner)
-*   **Service 3: `celery-beat`** (The Scheduler)
+- **Service 1: `web-api`** (The FastAPI Backend)
+- **Service 2: `celery-worker`** (The Task Runner)
+- **Service 3: `celery-beat`** (The Scheduler)
 
 ### 2. Step-by-Step Setup
 
 1.  **Create Project:** Go to Railway and create a new project.
 2.  **Add Database:** Add a Redis service (or use Upstash externally).
 3.  **Add Service (Web API):**
-    *   Select "GitHub Repo".
-    *   Connect this repository.
-    *   Name the service `web-api`.
+    - Select "GitHub Repo".
+    - Connect this repository.
+    - Name the service `web-api`.
 4.  **Add Service (Worker):**
-    *   Click "New" -> "GitHub Repo" -> Select the **SAME** repository again.
-    *   Name this service `celery-worker`.
+    - Click "New" -> "GitHub Repo" -> Select the **SAME** repository again.
+    - Name this service `celery-worker`.
 5.  **Add Service (Beat):**
-    *   Click "New" -> "GitHub Repo" -> Select the **SAME** repository a third time.
-    *   Name this service `celery-beat`.
+    - Click "New" -> "GitHub Repo" -> Select the **SAME** repository a third time.
+    - Name this service `celery-beat`.
 
 ### 3. Configure Start Commands
 
 Go to the "Settings" tab for each service and set the **Custom Start Command**:
 
-| Service Name | Start Command |
-| :--- | :--- |
-| **web-api** | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
-| **celery-worker** | `celery -A celery_app worker --loglevel=info` |
-| **celery-beat** | `celery -A celery_app beat --loglevel=info` |
+| Service Name      | Start Command                                  |
+| :---------------- | :--------------------------------------------- |
+| **web-api**       | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| **celery-worker** | `celery -A celery_app worker --loglevel=info`  |
+| **celery-beat**   | `celery -A celery_app beat --loglevel=info`    |
 
 ### 4. Configure Environment Variables
 
 Add these variables to the "Shared Variables" (or individually for each service).
 
-*   **SUPABASE_URL** & **SUPABASE_SERVICE_ROLE_KEY** (from Supabase)
-*   **GOOGLE_CSE_API_KEY** & **GOOGLE_CSE_CX** (from Google Cloud)
-*   **CELERY_BROKER_URL** & **CELERY_RESULT_BACKEND** (Set these to your Upstash/Railway Redis URL, e.g., `redis://...`)
-*   **SMTP Settings** (Same as local dev, use Gmail App Password)
+- **SUPABASE_URL** & **SUPABASE_SERVICE_ROLE_KEY** (from Supabase)
+- **GOOGLE_CSE_API_KEY** & **GOOGLE_CSE_CX** (from Google Cloud)
+- **CELERY_BROKER_URL** & **CELERY_RESULT_BACKEND** (Set these to your Upstash/Railway Redis URL, e.g., `redis://...`)
+- **SMTP Settings** (Same as local dev, use Gmail App Password)
 
 ### 5. Free-Tier Considerations
-*   **Resource Limits:** The free tier has limited execution minutes.
-*   **Sleep Behavior:** Railway services may "sleep" if inactive. The `web-api` will wake up on request, but the `celery-worker` and `celery-beat` might need to be kept alive or upgraded to a paid plan if you need 24/7 reliability.
-*   **Logs:** Check the "Deploy Logs" tab in Railway to debug issues.
+
+- **Resource Limits:** The free tier has limited execution minutes.
+- **Sleep Behavior:** Railway services may "sleep" if inactive. The `web-api` will wake up on request, but the `celery-worker` and `celery-beat` might need to be kept alive or upgraded to a paid plan if you need 24/7 reliability.
+- **Logs:** Check the "Deploy Logs" tab in Railway to debug issues.
 
 ### 6. Verification
-1.  **Health Check:** Visit `https://your-project.up.railway.app/health/celery`. It should return `{"redis": "ok", "celery": "ok"}`.
+
+1.  **Health Check:** Visit `https://<your-railway-web-api-domain>/health/celery`. It should return `{"redis": "ok", "celery": "ok"}`.
 2.  **Worker Check:** In Railway logs for `celery-worker`, ensure it says `[config] .> app: threatwatch` and is ready.
 3.  **Beat Check:** In Railway logs for `celery-beat`, ensure it is sending tasks every 5 minutes (`scan_due_monitors`).
 
@@ -360,18 +416,18 @@ Add these variables to the "Shared Variables" (or individually for each service)
 
 ### Common Failure Modes
 
-*   **Redis Connection Error:**
-    *   *Symptom:* Logs show "Connection refused" or "Error connecting to Redis".
-    *   *Fix:* Check `CELERY_BROKER_URL`. Ensure your Redis instance is running and reachable.
+- **Redis Connection Error:**
+  - _Symptom:_ Logs show "Connection refused" or "Error connecting to Redis".
+  - _Fix:_ Check `CELERY_BROKER_URL`. Ensure your Redis instance is running and reachable.
 
-*   **Worker Not Picking Jobs:**
-    *   *Symptom:* API returns success, but no report/email appears.
-    *   *Fix:* Check `celery-worker` logs. If the worker is crashing or silent, tasks are just piling up in Redis. Restart the worker.
+- **Worker Not Picking Jobs:**
+  - _Symptom:_ API returns success, but no report/email appears.
+  - _Fix:_ Check `celery-worker` logs. If the worker is crashing or silent, tasks are just piling up in Redis. Restart the worker.
 
-*   **Beat Running but Not Enqueuing:**
-    *   *Symptom:* Scheduled scans never happen.
-    *   *Fix:* Ensure `celery-beat` is running. Check if `DISABLE_SCHEDULER` is accidentally set to `true`.
+- **Beat Running but Not Enqueuing:**
+  - _Symptom:_ Scheduled scans never happen.
+  - _Fix:_ Ensure `celery-beat` is running. Check if `DISABLE_SCHEDULER` is accidentally set to `true`.
 
-*   **API Running but Async Jobs Fail:**
-    *   *Symptom:* API works, but `scan_monitor_task` fails immediately.
-    *   *Fix:* This usually means the Worker is missing env vars (like Google Keys or Supabase URL) that the API has. Ensure **all** services have the same environment variables.
+- **API Running but Async Jobs Fail:**
+  - _Symptom:_ API works, but `scan_monitor_task` fails immediately.
+  - _Fix:_ This usually means the Worker is missing env vars (like Google Keys or Supabase URL) that the API has. Ensure **all** services have the same environment variables.
