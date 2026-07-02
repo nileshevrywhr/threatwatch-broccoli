@@ -41,6 +41,63 @@ class TestBilling(unittest.TestCase):
         self.assertEqual(response.json()["checkout_url"], "https://checkout.url")
 
     @patch("main.supabase")
+    def test_create_checkout_active_enterprise_returns_conflict(self, mock_supabase):
+        mock_profile = MagicMock()
+        mock_profile.data = [{
+            "id": "user-123",
+            "email": "test@example.com",
+            "subscription_plan": "enterprise",
+            "subscription_status": "active",
+        }]
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_profile
+
+        response = self.client.post("/api/billing/create-checkout", json={"plan": "pro"})
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.json()["detail"]
+        self.assertEqual(payload["code"], "ACTIVE_SUBSCRIPTION")
+        self.assertIn("active subscription", payload["message"].lower())
+
+    @patch("main.supabase")
+    def test_cancel_active_paid_user_success(self, mock_supabase):
+        mock_profile = MagicMock()
+        mock_profile.data = [{
+            "id": "user-123",
+            "subscription_plan": "pro",
+            "subscription_status": "active",
+        }]
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_profile
+        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
+
+        response = self.client.post("/api/billing/cancel")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["code"], "SUBSCRIPTION_CANCELLED")
+        self.assertEqual(payload["effective_plan"], "free")
+        self.assertEqual(payload["subscription_status"], "cancelled")
+        self.assertTrue(payload["effective_at"])
+
+    @patch("main.supabase")
+    @patch("main.create_lemonsqueezy_checkout", new_callable=AsyncMock)
+    def test_create_checkout_after_cancel_returns_checkout_url(self, mock_create_checkout, mock_supabase):
+        mock_create_checkout.return_value = "https://checkout.url/resubscribe"
+
+        mock_profile = MagicMock()
+        mock_profile.data = [{
+            "id": "user-123",
+            "email": "test@example.com",
+            "subscription_plan": "free",
+            "subscription_status": "cancelled",
+        }]
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_profile
+
+        response = self.client.post("/api/billing/create-checkout", json={"plan": "pro"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["checkout_url"], "https://checkout.url/resubscribe")
+
+    @patch("main.supabase")
     def test_get_subscription(self, mock_supabase):
         mock_response = MagicMock()
         mock_response.data = [{"subscription_plan": "pro", "subscription_status": "active", "lemonsqueezy_subscription_id": "sub-1"}]

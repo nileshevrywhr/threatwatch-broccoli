@@ -150,6 +150,84 @@ LEMONSQUEEZY_ENTERPRISE_VARIANT_ID=your_enterprise_variant_id
 FRONTEND_BASE_URL=https://signalcanary.fyi
 ENABLE_BILLING=false
 
+### Billing API Contracts (MVP Cancel -> Resubscribe)
+
+All billing endpoints require `Authorization: Bearer <token>`.
+
+#### POST /api/billing/create-checkout
+
+Request body:
+
+```json
+{
+  "plan": "pro"
+}
+```
+
+Success (200):
+
+```json
+{
+  "checkout_url": "https://..."
+}
+```
+
+Already active subscription (409):
+
+```json
+{
+  "detail": {
+    "code": "ACTIVE_SUBSCRIPTION",
+    "message": "You already have an active subscription. Cancel it first to start a new checkout.",
+    "details": {
+      "subscription_plan": "enterprise",
+      "subscription_status": "active"
+    }
+  }
+}
+```
+
+#### POST /api/billing/cancel
+
+Success (200):
+
+```json
+{
+  "code": "SUBSCRIPTION_CANCELLED",
+  "message": "Subscription cancelled successfully.",
+  "effective_plan": "free",
+  "effective_at": "2026-07-02T12:34:56.000000+00:00",
+  "subscription_status": "cancelled"
+}
+```
+
+No active paid subscription (409):
+
+```json
+{
+  "detail": {
+    "code": "NO_ACTIVE_PAID_SUBSCRIPTION",
+    "message": "No active paid subscription to cancel.",
+    "details": {
+      "subscription_plan": "free",
+      "subscription_status": "inactive"
+    }
+  }
+}
+```
+
+Error shape for billing endpoints (4xx/5xx):
+
+```json
+{
+  "detail": {
+    "code": "STRING_CODE",
+    "message": "Human-readable message",
+    "details": {}
+  }
+}
+```
+
 # Feature Flags
 DISABLE_SCHEDULER=false
 ENABLE_EMAIL_DELIVERY=false

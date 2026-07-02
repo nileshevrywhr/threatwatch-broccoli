@@ -462,37 +462,137 @@ def health_check_celery():
 class CheckoutRequest(BaseModel):
     plan: Literal["pro", "enterprise"]
 
+
+class CheckoutResponse(BaseModel):
+    checkout_url: str
+
+
+class BillingCancelResponse(BaseModel):
+    code: str
+    message: str
+    effective_plan: str
+    effective_at: str
+    subscription_status: str
+
+
+class BillingErrorResponse(BaseModel):
+    code: str
+    message: str
+    details: Optional[Any] = None
+
 class SubscriptionResponse(BaseModel):
     plan: str
     status: str
     lemonsqueezy_subscription_id: Optional[str] = None
 
-@app.post("/api/billing/create-checkout")
+
+def _billing_error(code: str, message: str, status_code: int, details: Optional[Any] = None):
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": message,
+            "details": details,
+        },
+    )
+
+@app.post(
+    "/api/billing/create-checkout",
+    response_model=CheckoutResponse,
+    responses={
+        401: {
+            "model": BillingErrorResponse,
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": "UNAUTHORIZED",
+                        "message": "Invalid or expired bearer token",
+                        "details": None,
+                    }
+                }
+            },
+        },
+        403: {
+            "model": BillingErrorResponse,
+            "description": "Forbidden",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": "FORBIDDEN",
+                        "message": "Not authenticated",
+                        "details": None,
+                    }
+                }
+            },
+        },
+        409: {
+            "model": BillingErrorResponse,
+            "description": "Active subscription already exists",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": "ACTIVE_SUBSCRIPTION",
+                        "message": "You already have an active subscription. Cancel it first to start a new checkout.",
+                        "details": {
+                            "subscription_plan": "enterprise",
+                            "subscription_status": "active",
+                        },
+                    }
+                }
+            },
+        },
+    },
+)
 async def create_checkout(request: CheckoutRequest, user_id: str = Depends(verify_token)):
     if not supabase:
-        raise HTTPException(status_code=503, detail="Database service unavailable")
+        raise _billing_error(
+            code="DATABASE_UNAVAILABLE",
+            message="Database service unavailable",
+            status_code=503,
+        )
 
     # 1. Fetch user email and check existing subscription
     try:
         profile_res = supabase.table("profiles").select("*").eq("id", user_id).execute()
         if not profile_res.data:
-            # If profile doesn't exist, we can't get email easily without calling auth.admin which is risky
-            # But the profiles table SHOULD have been created on signup.
-            # As a fallback, we'll try to use the user_id as email if missing (not ideal) or error out.
-            raise HTTPException(status_code=404, detail="User profile not found")
+            raise _billing_error(
+                code="PROFILE_NOT_FOUND",
+                message="User profile not found",
+                status_code=404,
+                details={"user_id": user_id},
+            )
 
         profile = profile_res.data[0]
         email = profile.get("email")
         if not email:
-            raise HTTPException(status_code=400, detail="User email not found in profile")
+            raise _billing_error(
+                code="PROFILE_EMAIL_MISSING",
+                message="User email not found in profile",
+                status_code=400,
+                details={"user_id": user_id},
+            )
 
         if profile.get("subscription_status") == "active":
-            return {"checkout_url": None, "message": "User already has an active subscription"}
+            raise _billing_error(
+                code="ACTIVE_SUBSCRIPTION",
+                message="You already have an active subscription. Cancel it first to start a new checkout.",
+                status_code=409,
+                details={
+                    "subscription_plan": profile.get("subscription_plan", "free"),
+                    "subscription_status": profile.get("subscription_status", "inactive"),
+                },
+            )
 
         # 2. Create Lemon Squeezy checkout
         checkout_url = await create_lemonsqueezy_checkout(user_id, email, request.plan)
         if not checkout_url:
-            raise HTTPException(status_code=500, detail="Failed to create checkout session")
+            raise _billing_error(
+                code="CHECKOUT_CREATION_FAILED",
+                message="Failed to create checkout session",
+                status_code=500,
+                details={"plan": request.plan},
+            )
 
         return {"checkout_url": checkout_url}
 
@@ -500,7 +600,117 @@ async def create_checkout(request: CheckoutRequest, user_id: str = Depends(verif
         raise
     except Exception as e:
         logger.error(f"Error in create_checkout: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        raise _billing_error(
+            code="INTERNAL_ERROR",
+            message="Internal Server Error",
+            status_code=500,
+        )
+
+
+@app.post(
+    "/api/billing/cancel",
+    response_model=BillingCancelResponse,
+    responses={
+        401: {
+            "model": BillingErrorResponse,
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": "UNAUTHORIZED",
+                        "message": "Invalid or expired bearer token",
+                        "details": None,
+                    }
+                }
+            },
+        },
+        403: {
+            "model": BillingErrorResponse,
+            "description": "Forbidden",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": "FORBIDDEN",
+                        "message": "Not authenticated",
+                        "details": None,
+                    }
+                }
+            },
+        },
+        409: {
+            "model": BillingErrorResponse,
+            "description": "No paid subscription to cancel",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": "NO_ACTIVE_PAID_SUBSCRIPTION",
+                        "message": "No active paid subscription to cancel.",
+                        "details": {
+                            "subscription_plan": "free",
+                            "subscription_status": "inactive",
+                        },
+                    }
+                }
+            },
+        },
+    },
+)
+async def cancel_checkout(user_id: str = Depends(verify_token)):
+    if not supabase:
+        raise _billing_error(
+            code="DATABASE_UNAVAILABLE",
+            message="Database service unavailable",
+            status_code=503,
+        )
+
+    try:
+        profile_res = supabase.table("profiles").select("subscription_plan, subscription_status").eq("id", user_id).execute()
+        if not profile_res.data:
+            raise _billing_error(
+                code="PROFILE_NOT_FOUND",
+                message="User profile not found",
+                status_code=404,
+                details={"user_id": user_id},
+            )
+
+        profile = profile_res.data[0]
+        current_plan = profile.get("subscription_plan", "free")
+        current_status = profile.get("subscription_status", "inactive")
+        has_paid_plan = current_plan in ("pro", "enterprise")
+
+        if not has_paid_plan and current_status != "active":
+            raise _billing_error(
+                code="NO_ACTIVE_PAID_SUBSCRIPTION",
+                message="No active paid subscription to cancel.",
+                status_code=409,
+                details={
+                    "subscription_plan": current_plan,
+                    "subscription_status": current_status,
+                },
+            )
+
+        effective_at = datetime.now(timezone.utc).isoformat()
+        supabase.table("profiles").update({
+            "subscription_plan": "free",
+            "subscription_status": "cancelled",
+        }).eq("id", user_id).execute()
+
+        return {
+            "code": "SUBSCRIPTION_CANCELLED",
+            "message": "Subscription cancelled successfully.",
+            "effective_plan": "free",
+            "effective_at": effective_at,
+            "subscription_status": "cancelled",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in cancel_checkout: {e}")
+        raise _billing_error(
+            code="INTERNAL_ERROR",
+            message="Internal Server Error",
+            status_code=500,
+        )
 
 @app.get("/api/billing/subscription", response_model=SubscriptionResponse)
 async def get_subscription(user_id: str = Depends(verify_token)):
