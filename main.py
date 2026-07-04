@@ -4,7 +4,7 @@ import redis
 from datetime import datetime, timezone
 from typing import Literal, List, Optional, Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi import Request
@@ -548,7 +548,7 @@ def _billing_error(code: str, message: str, status_code: int, details: Optional[
         },
     },
 )
-async def create_checkout(request: CheckoutRequest, user_id: str = Depends(verify_token)):
+async def create_checkout(request: CheckoutRequest, http_request: Request, user_id: str = Depends(verify_token)):
     if not supabase:
         raise _billing_error(
             code="DATABASE_UNAVAILABLE",
@@ -589,7 +589,8 @@ async def create_checkout(request: CheckoutRequest, user_id: str = Depends(verif
             )
 
         # 2. Create Lemon Squeezy checkout
-        checkout_url = await create_lemonsqueezy_checkout(user_id, email, request.plan)
+        app_origin = http_request.headers.get("x-app-origin")
+        checkout_url = await create_lemonsqueezy_checkout(user_id, email, request.plan, app_origin=app_origin)
         if not checkout_url:
             raise _billing_error(
                 code="CHECKOUT_CREATION_FAILED",

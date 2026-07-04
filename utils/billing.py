@@ -4,6 +4,7 @@ import hashlib
 import httpx
 import logging
 from typing import Optional, Dict, Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,8 @@ LEMONSQUEEZY_WEBHOOK_SECRET = os.environ.get("LEMONSQUEEZY_WEBHOOK_SECRET")
 LEMONSQUEEZY_STORE_ID = os.environ.get("LEMONSQUEEZY_STORE_ID")
 PRO_VARIANT_ID = os.environ.get("LEMONSQUEEZY_PRO_VARIANT_ID")
 ENTERPRISE_VARIANT_ID = os.environ.get("LEMONSQUEEZY_ENTERPRISE_VARIANT_ID")
-FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://signalcanary.fyi")
+DEFAULT_FRONTEND_BASE_URL = "https://signalcanary.fyi"
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", DEFAULT_FRONTEND_BASE_URL)
 
 LEMONSQUEEZY_API_URL = "https://api.lemonsqueezy.com/v1"
 
@@ -21,6 +23,55 @@ __all__ = [
     "create_lemonsqueezy_checkout",
     "cancel_lemonsqueezy_subscription",
 ]
+
+
+def _normalize_origin(raw_origin: Optional[str]) -> Optional[str]:
+    if not raw_origin:
+        return None
+
+    origin = raw_origin.strip()
+    if not origin:
+        return None
+
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+        return None
+
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        return None
+
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
+def _is_allowed_checkout_origin(origin: str) -> bool:
+    parsed = urlparse(origin)
+    hostname = (parsed.hostname or "").lower()
+    default_origin = _normalize_origin(FRONTEND_BASE_URL) or DEFAULT_FRONTEND_BASE_URL
+
+    if origin == default_origin:
+        return True
+
+    if hostname in {"localhost", "127.0.0.1"}:
+        return True
+
+    if hostname.endswith(".vercel.app"):
+        return True
+
+    return False
+
+
+def _resolve_checkout_base_url(app_origin: Optional[str]) -> str:
+    default_origin = _normalize_origin(FRONTEND_BASE_URL) or DEFAULT_FRONTEND_BASE_URL
+    candidate = _normalize_origin(app_origin)
+
+    if not candidate:
+        return default_origin
+
+    if _is_allowed_checkout_origin(candidate):
+        return candidate
+
+    logger.warning("Ignoring unsupported checkout origin: %s", app_origin)
+    return default_origin
 
 
 def verify_lemonsqueezy_signature(body: bytes, signature: str) -> bool:
@@ -47,7 +98,7 @@ def verify_lemonsqueezy_signature(body: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str) -> Optional[str]:
+async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str, app_origin: Optional[str] = None) -> Optional[str]:
     """
     Creates a Lemon Squeezy checkout and returns the URL.
     """
@@ -59,6 +110,8 @@ async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str) -> O
     if not variant_id:
         logger.error(f"Variant ID for plan {plan} not configured")
         return None
+
+    checkout_base_url = _resolve_checkout_base_url(app_origin)
 
     payload = {
         "data": {
@@ -72,7 +125,7 @@ async def create_lemonsqueezy_checkout(user_id: str, email: str, plan: str) -> O
                     "email": email
                 },
                 "product_options": {
-                    "redirect_url": f"{FRONTEND_BASE_URL}/payment-success"
+                    "redirect_url": f"{checkout_base_url}/payment-success"
                 }
             },
             "relationships": {

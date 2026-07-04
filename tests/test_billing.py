@@ -35,10 +35,20 @@ class TestBilling(unittest.TestCase):
         mock_profile.data = [{"id": "user-123", "email": "test@example.com", "subscription_status": "inactive"}]
         mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_profile
 
-        response = self.client.post("/api/billing/create-checkout", json={"plan": "pro"})
+        response = self.client.post(
+            "/api/billing/create-checkout",
+            json={"plan": "pro"},
+            headers={"X-App-Origin": "https://threatwatch-branch.vercel.app"},
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["checkout_url"], "https://checkout.url")
+        mock_create_checkout.assert_awaited_once_with(
+            "user-123",
+            "test@example.com",
+            "pro",
+            app_origin="https://threatwatch-branch.vercel.app",
+        )
 
     @patch("main.supabase")
     def test_create_checkout_active_enterprise_returns_conflict(self, mock_supabase):
@@ -144,6 +154,12 @@ class TestBilling(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["checkout_url"], "https://checkout.url/resubscribe")
+        mock_create_checkout.assert_awaited_once_with(
+            "user-123",
+            "test@example.com",
+            "pro",
+            app_origin=None,
+        )
 
     @patch("main.supabase")
     def test_cancel_without_paid_subscription_returns_conflict(self, mock_supabase):
