@@ -312,19 +312,26 @@ async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_tok
 
 @app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60, fail_closed=True))])
 async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
-    if supabase and os.environ.get("ENABLE_BILLING", "false").lower() in ("true", "1", "yes"):
-        profile_res = supabase.table("profiles").select("subscription_status").eq("id", user_id).execute()
-        status = profile_res.data[0].get("subscription_status") if profile_res.data else "inactive"
-        if status != "active":
-            raise HTTPException(status_code=402, detail="Active subscription required")
-    """
-    Triggers an immediate scan for a specific monitor.
-    Does not synchronously validate existence (worker handles it).
-    Returns the Celery task ID.
-    """
+    if not supabase:
+        raise HTTPException(
+            status_code=503, detail="Database service unavailable")
+
     try:
+        profile_res = supabase.table("profiles").select("subscription_plan, subscription_status").eq("id", user_id).execute()
+        profile = profile_res.data[0] if profile_res.data else {}
+        subscription_status = profile.get("subscription_status", "inactive")
+
+        if subscription_status != "active":
+            raise HTTPException(status_code=402, detail="Active subscription required")
+
+        monitor_res = supabase.table("monitors").select("id").eq("id", monitor_id).eq("user_id", user_id).execute()
+        if not monitor_res.data:
+            raise HTTPException(status_code=404, detail="Monitor not found")
+
         task = scan_monitor_task.delay(monitor_id)
         return {"task_id": task.id}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(
             f"Error triggering test scan for monitor {monitor_id}: {e}")
