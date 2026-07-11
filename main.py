@@ -20,7 +20,7 @@ from utils.billing import (
     verify_lemonsqueezy_signature,
     cancel_lemonsqueezy_subscription,
 )
-from utils.rate_limit import RateLimiter
+from utils.rate_limit import RateLimiter, IPRateLimiter
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -125,7 +125,7 @@ def _derive_report_severity(report: dict) -> str:
     return "low"
 
 
-@app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60))])
+@app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60, fail_closed=True))])
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
     if supabase and os.environ.get("ENABLE_BILLING", "false").lower() in ("true", "1", "yes"):
         # Check for active subscription
@@ -180,7 +180,7 @@ async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@app.get("/api/monitors", response_model=List[MonitorResponse])
+@app.get("/api/monitors", response_model=List[MonitorResponse], dependencies=[Depends(RateLimiter(requests=60, window=60))])
 async def get_monitors(user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(
@@ -213,7 +213,7 @@ async def get_monitors(user_id: str = Depends(verify_token)):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@app.get("/api/monitors/{monitor_id}/reports", response_model=List[ReportResponse])
+@app.get("/api/monitors/{monitor_id}/reports", response_model=List[ReportResponse], dependencies=[Depends(RateLimiter(requests=60, window=60))])
 async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(
@@ -277,7 +277,7 @@ async def get_monitor_reports(monitor_id: str, user_id: str = Depends(verify_tok
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60))])
+@app.post("/api/monitors/{monitor_id}/test", dependencies=[Depends(RateLimiter(requests=5, window=60, fail_closed=True))])
 async def test_monitor(monitor_id: str, user_id: str = Depends(verify_token)):
     if supabase and os.environ.get("ENABLE_BILLING", "false").lower() in ("true", "1", "yes"):
         profile_res = supabase.table("profiles").select("subscription_status").eq("id", user_id).execute()
@@ -412,7 +412,7 @@ def get_feed(limit: int = 20, offset: int = 0, user_id: str = Depends(verify_tok
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@app.get("/health/celery")
+@app.get("/health/celery", dependencies=[Depends(IPRateLimiter(requests=10, window=60))])
 def health_check_celery():
     redis_status = "ok"
     celery_status = "ok"
@@ -503,6 +503,7 @@ def _billing_error(code: str, message: str, status_code: int, details: Optional[
 @app.post(
     "/api/billing/create-checkout",
     response_model=CheckoutResponse,
+    dependencies=[Depends(RateLimiter(requests=3, window=60, fail_closed=True))],
     responses={
         401: {
             "model": BillingErrorResponse,
@@ -615,6 +616,7 @@ async def create_checkout(request: CheckoutRequest, http_request: Request, user_
 @app.post(
     "/api/billing/cancel",
     response_model=BillingCancelResponse,
+    dependencies=[Depends(RateLimiter(requests=3, window=60, fail_closed=True))],
     responses={
         401: {
             "model": BillingErrorResponse,
@@ -735,7 +737,7 @@ async def cancel_checkout(user_id: str = Depends(verify_token)):
             status_code=500,
         )
 
-@app.get("/api/billing/subscription", response_model=SubscriptionResponse)
+@app.get("/api/billing/subscription", response_model=SubscriptionResponse, dependencies=[Depends(RateLimiter(requests=60, window=60))])
 async def get_subscription(user_id: str = Depends(verify_token)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database service unavailable")

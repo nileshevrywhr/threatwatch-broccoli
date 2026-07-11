@@ -1,53 +1,83 @@
 import os
 import time
+import uuid
 import logging
 import redis
 from fastapi import HTTPException, Request, Depends
-from typing import Optional
 from utils.auth import verify_token
 
 logger = logging.getLogger(__name__)
 
-# Initialize Redis client globally to reuse connection pool
-REDIS_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
-try:
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-except Exception as e:
-    logger.error(f"Failed to initialize Redis for rate limiting: {e}")
-    redis_client = None
+REDIS_URL = os.environ.get("CELERY_BROKER_URL")
+if not REDIS_URL:
+    raise RuntimeError("CELERY_BROKER_URL is required for rate limiting")
+
+_redis = redis.from_url(REDIS_URL, decode_responses=True)
+
+_SLIDING_WINDOW = _redis.register_script("""
+local key = KEYS[1]
+local now  = tonumber(ARGV[1])
+local win  = tonumber(ARGV[2])
+local lim  = tonumber(ARGV[3])
+local mbr  = ARGV[4]
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - win)
+local cnt = redis.call('ZCARD', key)
+if cnt >= lim then
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    local retry = win
+    if #oldest > 0 then
+        retry = math.ceil(tonumber(oldest[2]) + win - now)
+    end
+    return {-1, retry}
+end
+redis.call('ZADD', key, now, mbr)
+redis.call('EXPIRE', key, math.ceil(win))
+return {cnt + 1, 0}
+""")
+
+
+def _enforce(identifier: str, limit: int, window: int, fail_closed: bool) -> None:
+    now = time.time()
+    member = f"{now}:{uuid.uuid4().hex[:8]}"
+    try:
+        result = _SLIDING_WINDOW(
+            keys=[f"rl:{identifier}"],
+            args=[now, window, limit, member],
+        )
+    except Exception as e:
+        logger.error("Rate limit Redis error: %s", e)
+        if fail_closed:
+            raise HTTPException(status_code=503, detail="Service temporarily unavailable")
+        return
+
+    count, retry_after = result
+    if count == -1:
+        raise HTTPException(
+            status_code=429,
+            detail="Too Many Requests",
+            headers={
+                "Retry-After": str(max(1, int(retry_after))),
+                "X-RateLimit-Limit": str(limit),
+                "X-RateLimit-Remaining": "0",
+            },
+        )
+
 
 class RateLimiter:
-    def __init__(self, requests: int = 60, window: int = 60, user_id: Optional[str] = None):
+    def __init__(self, requests: int, window: int, fail_closed: bool = False):
         self.requests = requests
         self.window = window
-        self.user_id = user_id
+        self.fail_closed = fail_closed
 
-    def __call__(self, request: Request, user_id: str = Depends(verify_token)):
-        if not redis_client:
-            return # Fail open
+    def __call__(self, user_id: str = Depends(verify_token)) -> None:
+        _enforce(f"user:{user_id}", self.requests, self.window, self.fail_closed)
 
-        try:
-            # Prefer user_id for rate limiting if available (Authenticated endpoints)
-            identifier = user_id
-            prefix = "user"
 
-            # If we were to support public endpoints, we would handle missing user_id here
-            # but since verify_token raises 401, we are guaranteed a user_id here.
+class IPRateLimiter:
+    def __init__(self, requests: int, window: int):
+        self.requests = requests
+        self.window = window
 
-            # Simple fixed window
-            current_window = int(time.time() // self.window)
-            key = f"rate_limit:{prefix}:{identifier}:{current_window}"
-
-            count = redis_client.incr(key)
-            if count == 1:
-                redis_client.expire(key, self.window)
-
-            if count > self.requests:
-                logger.warning(f"Rate limit exceeded for {prefix} {identifier}")
-                raise HTTPException(status_code=429, detail="Too Many Requests")
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Rate limiting error: {e}")
-            # Fail open
+    def __call__(self, request: Request) -> None:
+        ip = request.client.host if request.client else "unknown"
+        _enforce(f"ip:{ip}", self.requests, self.window, fail_closed=False)
