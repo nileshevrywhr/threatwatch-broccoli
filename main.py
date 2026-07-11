@@ -59,6 +59,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+ALLOWED_ORIGINS_SET = set(allow_origins)
+
 # Supabase Client Setup
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -607,6 +609,8 @@ async def create_checkout(request: CheckoutRequest, http_request: Request, user_
 
         # 2. Create Lemon Squeezy checkout
         app_origin = http_request.headers.get("x-app-origin")
+        if app_origin and app_origin not in ALLOWED_ORIGINS_SET:
+            app_origin = None
         checkout_url = await create_lemonsqueezy_checkout(user_id, email, request.plan, app_origin=app_origin)
         if not checkout_url:
             raise _billing_error(
