@@ -6,6 +6,7 @@ from typing import Literal, List, Optional, Any
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi import Request
 from pydantic import BaseModel, Field
@@ -32,6 +33,20 @@ if not os.environ.get("SUPABASE_JWT_SECRET"):
     raise RuntimeError("SUPABASE_JWT_SECRET environment variable is required.")
 
 app = FastAPI()
+
+MAX_BODY_SIZE = 64 * 1024
+
+
+class LimitBodySizeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("POST", "PUT", "PATCH"):
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > MAX_BODY_SIZE:
+                raise HTTPException(status_code=413, detail="Request body too large")
+        return await call_next(request)
+
+
+app.add_middleware(LimitBodySizeMiddleware)
 
 # CORS Configuration
 # Rules:
