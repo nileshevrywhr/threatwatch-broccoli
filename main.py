@@ -127,25 +127,41 @@ def _derive_report_severity(report: dict) -> str:
 
 @app.post("/api/monitors", dependencies=[Depends(RateLimiter(requests=10, window=60, fail_closed=True))])
 async def create_monitor(monitor: MonitorRequest, user_id: str = Depends(verify_token)):
-    if supabase and os.environ.get("ENABLE_BILLING", "false").lower() in ("true", "1", "yes"):
-        # Check for active subscription
-        profile_res = supabase.table("profiles").select("subscription_status").eq("id", user_id).execute()
-        status = profile_res.data[0].get("subscription_status") if profile_res.data else "inactive"
-        if status != "active":
-            raise HTTPException(status_code=402, detail="Active subscription required")
     if not supabase:
         raise HTTPException(
             status_code=503, detail="Database service unavailable")
 
     try:
-        # Calculate next_run_at
+        profile_res = supabase.table("profiles").select("subscription_plan, subscription_status").eq("id", user_id).execute()
+        profile = profile_res.data[0] if profile_res.data else {}
+        subscription_plan = profile.get("subscription_plan", "free")
+        subscription_status = profile.get("subscription_status", "inactive")
+
+        if subscription_status != "active":
+            raise HTTPException(status_code=402, detail="Active subscription required")
+
+        plan_limits = {"free": 0, "pro": 10, "enterprise": 50}
+        max_monitors = plan_limits.get(subscription_plan, 0)
+
+        if max_monitors == 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Free plan does not allow monitor creation. Upgrade to Pro or Enterprise."
+            )
+
+        existing_res = supabase.table("monitors").select("id", count="exact").eq("user_id", user_id).eq("active", True).execute()
+        if (existing_res.count or 0) >= max_monitors:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Monitor limit reached (max {max_monitors} active monitors for {subscription_plan} plan)"
+            )
+
+        now = datetime.now(timezone.utc)
         # We want the *next* scheduled run to be in the future,
         # but we also want to trigger an immediate scan now.
         # calculate_next_run_at(freq, now) returns now + freq (strictly future).
-        now = datetime.now(timezone.utc)
         next_run_at = calculate_next_run_at(monitor.frequency, now)
 
-        # Prepare data for insertion
         new_monitor = {
             "user_id": user_id,
             "query_text": monitor.term,

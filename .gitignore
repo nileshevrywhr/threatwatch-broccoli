@@ -12,6 +12,10 @@ venv/
 docs
 scripts
 
+# dot files
+.jules
+.ruff_cache
+
 # Celery
 celerybeat-schedule
 celerybeat.pid
